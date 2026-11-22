@@ -1,0 +1,338 @@
+SKILL: FOMC HAWKISHNESS ANALYSIS
+Version 1.0 (prompt score-v1, summary-v2), written 22 November 2026
+
+=====================================================================
+0. WHAT THIS SKILL DOES
+=====================================================================
+It turns what FOMC voters have said and how they have voted into a hawkishness signal ahead of the next FOMC meeting. The inputs are speeches, written essays, dissent statements and FOMC votes. The outputs are:
+
+  - a stance score for every voter, from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), measured against the CURRENT policy rate;
+  - each voter's call for the next meeting (hike / hold / cut, with a probability);
+  - a Fed gauge from 0 to 10, the next-meeting tally and the spread between members;
+  - the change since the previous window, a month-by-month path, and a 3-4 sentence written read.
+
+Assume the source data is already collected (Section 2 lists what is needed). The skill covers analysis only, not collection.
+
+The method is deliberately split into two kinds of step:
+  - JUDGEMENT steps, done by an AI model, one document at a time (Steps 3 and 6);
+  - ARITHMETIC steps, done in plain code or by hand, with no AI (Steps 1, 4 and 5).
+Never let the AI do the arithmetic, and never let it change the numbers.
+
+=====================================================================
+1. PRINCIPLES (read these first)
+=====================================================================
+P1. Identify people by a fixed ID (e.g. "waller", "williams"), never by loosely matching names. Map each exact printed name to its ID. Flag any name you don't recognise; never guess.
+P2. Score every document against the policy rate IN FORCE ON THAT DOCUMENT'S DATE, not today's rate. A July speech is judged against July's rate. This is what makes backtests fair.
+P3. Use only views the speaker states as their own. Questions put to them, other people's views and staff forecasts don't count.
+P4. Evidence must be quoted word for word. Check every quote against the source text in code, and drop any quote that isn't found.
+P5. Cache each score by (document ID, model, prompt version). Re-score only when the model or prompt version changes. Use temperature 0.
+P6. Keep every setting in one config: model, prompt version, source weights, vote scores, call thresholds. Don't scatter numbers through the code.
+P7. Hold is the default. No call, an out-of-date call or a tie all count as HOLD (Step 5c). This was the most important fix found in testing.
+P8. Change one thing at a time and backtest it (Section 11, check C5). Testing against a single meeting only gives you 12 data points, so be wary of tuning the prompt to fit it.
+
+=====================================================================
+2. INPUT DATA REQUIRED
+=====================================================================
+A. meetings: one row per FOMC decision
+     date (decision day, YYYY-MM-DD), decision (hike | hold | cut), decision_bps (e.g. 25, or 0 for a hold),
+     target_range (text, e.g. "3-3/4 to 4 percent")
+B. votes: one row per voter per meeting (12 per meeting)
+     meeting_date, person_id, vote (for | against), dissent_text (the statement's wording for a dissent, e.g.
+     "preferred to raise the target range for the federal funds rate by 1/4 percentage point at this meeting")
+C. documents: one row per text
+     doc_id, person_id, date, title, url, doc_type, full cleaned text
+     doc_type is one of:
+       statement  = a written statement explaining a member's own FOMC vote or dissent
+       essay      = a written essay or article by the member
+       speech     = a prepared speech
+       qa         = a one-on-one Q&A or interview transcript
+       panel      = a panel discussion or news report
+     Exclude items with no text, such as video-only events.
+D. FOMC calendar: the first and last day of every scheduled meeting, past and future (from the Fed's FOMC calendar page). Leave out notation votes.
+
+The current voters are the 12 people who voted at the most recent decision on or before the as-of date.
+
+=====================================================================
+3. CONFIGURATION (defaults that were tested)
+=====================================================================
+Source weights (how much one fully relevant, fully confident document counts):
+    vote (a dissent)       1.0
+    vote_agree             0.3   (voting with the majority; low weight so it doesn't drown out speeches)
+    statement              1.0
+    essay                  1.0
+    speech                 0.8
+    qa                     0.6
+    panel                  0.4
+
+Vote scores (judged against that meeting's decision):
+    agree                       0
+    dissent_tighter_rate       +4   wanted a hike, or a hold when the majority cut
+    dissent_looser_rate        -4   wanted a cut, or a smaller hike, or a hold when the majority hiked
+    dissent_tighter_wording    +3   agreed on the rate but objected to dovish wording or an easing bias
+    dissent_looser_wording     -3   agreed on the rate but objected to hawkish wording or a tightening bias
+
+Other:
+    MIN_RELEVANCE_FOR_CALL = 0.5   a member's call comes from their latest document with policy_relevance >= 0.5
+    path_months            = 6
+    window_decay           = [1.0, 0.5, 0.25]   recency weight for documents from the current window, the one before, and the one before that
+    temperature            = 0
+    prefilter              = a document with fewer than 3 hits on the keywords below gets relevance 0 and isn't sent to the AI:
+        inflation, monetary policy, policy rate, federal funds, labor market, unemployment, rate cut,
+        rate increase, price stability, maximum employment, FOMC   (case-insensitive; count every occurrence)
+        This removes speeches about regulation, payments, AI or history, which carry no policy signal, and saves about 25% of calls.
+
+=====================================================================
+4. STEP 1: POLICY CONTEXT (no AI)
+=====================================================================
+Work this out for any date D from the meetings, votes and calendar data:
+    target_range        the range set by the most recent decision on or before D
+    last_decision       hike / hold / cut, with bps and date
+    last_vote           the tally (e.g. "10-2") and each dissenter with their dissent_text
+    next_meeting        the first scheduled meeting whose last day is after D
+    blackout_start      the second Saturday before the next meeting's first day (the Fed's rule).
+                        To find it: step back from the first day to the nearest earlier Saturday, then go back 7 more days.
+                        Example: for the meeting on 27-28 Oct 2026, the blackout starts on Sat 17 Oct 2026.
+
+Write the context as three plain lines and pass it to EVERY AI call:
+    Target range for the federal funds rate: 3-3/4 to 4 percent.
+    Last decision: held the target range on 2026-10-28 (vote 10-2; dissents: Lisa D. Cook preferred to raise ...; Beth M. Hammack preferred to raise ...).
+    Next FOMC meeting: 2026-12-08 to 2026-12-09.
+
+=====================================================================
+5. STEP 2: SPEAKER EXTRACTION (AI; only for Q&A, panel or livestream transcripts)
+=====================================================================
+Skip this step for prepared speeches, essays and statements, since the whole text is the member's own.
+For a transcript with several speakers:
+  - Ask the model to return ONLY the passages spoken by the member, with start and end timestamps.
+  - Mark any passage where the speaker is unclear as "uncertain". Store these but never score them.
+  - Split long transcripts into chunks (about 20 minutes each) and merge the results.
+  - Store the result so this runs once per document. Then score the kept passages as the document's TEXT in Step 3.
+(Status: this step was designed but not used in testing, because no transcripts were collected.)
+
+=====================================================================
+6. STEP 3: SCORE EACH DOCUMENT (AI, one call per document)
+=====================================================================
+6a. Before calling the AI, run the prefilter (Section 3). A document that fails it is stored as
+    stance 0, relevance 0, confidence 0, with no call and no AI call made.
+
+6b. Send the SYSTEM PROMPT below exactly as written, using structured JSON output with the schema in 6d and temperature 0.
+
+----- SYSTEM PROMPT (score-v1) -----
+You rate the monetary-policy stance of one FOMC participant from one document.
+
+THE MANDATE
+The Federal Reserve's dual mandate is maximum employment and stable prices. Price stability means inflation of 2 percent over the longer run, measured by the PCE price index. A member's stance reflects which side of the mandate they treat as the bigger risk and what policy that implies. Concern that inflation stays above 2 percent is hawkish (keep rates higher, or raise them). Concern that the labour market is weakening is dovish (lower rates). Judge the balance of risks the member describes, not merely which topics they mention.
+
+THE SCALE
+Stance is measured RELATIVE TO THE CURRENT POLICY RATE given in POLICY CONTEXT, not relative to a neutral rate or to history. Half points (e.g. 1.5) are allowed.
+
++5  wants bigger or faster hikes than a single 25bps move. e.g. "a 50 basis point increase would be appropriate"; "we are behind the curve and must act forcefully"
++4  wants a hike at the next meeting. e.g. "I would support raising the target range at our next meeting"
++3  leans toward another hike soon; a tightening bias. e.g. "further firming may well be needed"; "I am not convinced we are done"
++2  hold, but inflation is clearly the bigger risk; would resist cuts. e.g. "policy needs to remain restrictive for some time"; "I see no case for easing"
++1  hold, with a mild hawkish tilt. e.g. "I want to see more progress on inflation before considering any change"
+ 0  comfortable holding; risks balanced; no bias. e.g. "policy is well positioned"; "we can afford to wait and see"
+-1  hold, with a mild dovish tilt. e.g. "I am watching the softening in hiring closely"
+-2  hold for now but expects cuts; employment is the bigger risk. e.g. "reductions would likely be appropriate later this year"
+-3  open to a cut soon. e.g. "a cut could be appropriate in the coming meetings"
+-4  wants a cut at the next meeting. e.g. "I would support lowering the target range at our next meeting"
+-5  wants big or fast cuts (50bps, or a series). e.g. "we should move quickly to bring the rate down"
+
+RULES
+1. Rate only views the speaker states as their own. Ignore questions put to them, other people's views they describe, and staff or market forecasts they do not endorse.
+2. If the document has little or no monetary-policy content (payments, regulation, supervision, history, research, community development), set policy_relevance near 0, stance 0 and confidence low. Do not infer a stance from the speaker's reputation, past views or past votes.
+3. Standard disclaimers ("my views are my own", "data dependent", "meeting by meeting") are not evidence for either side.
+4. next_meeting_call gives the probability that the speaker would favour each action at the NEXT MEETING named in POLICY CONTEXT. The three numbers sum to 1 and must be consistent with the stance: e.g. a stance of +4 means hike is the most likely call; a stance near 0 means hold.
+5. policy_relevance (0-1): how much of the document is about the outlook for monetary policy. confidence (0-1): how clearly the text reveals the speaker's stance.
+6. mandate_balance runs from -1 (worried only about employment) to +1 (worried only about inflation); 0 means the risks are treated as balanced. Give a one-line mandate_reason.
+7. sub_views: one short sentence each on inflation, the labour market, the preferred policy path, and urgency. Write "not discussed" where the text says nothing.
+8. evidence: 2 or 3 quotes copied EXACTLY, character for character, from the TEXT, each under 40 words, with the document date. Choose the passages that most determine the stance. Do not paraphrase, join or shorten quotes.
+9. summary: one line on the speaker's stance and why.
+----- END SYSTEM PROMPT -----
+
+6c. USER MESSAGE format:
+    POLICY CONTEXT (as of the document date)
+    <the three context lines for the DOCUMENT'S date>
+
+    DOCUMENT
+    Speaker: <full name> (<institution>)
+    Date: <YYYY-MM-DD>
+    Type: <speech | statement | essay | qa | panel>
+    Title: <title>
+    URL: <url>
+
+    TEXT
+    <full cleaned text, or the kept passages with timestamps>
+
+6d. JSON SCHEMA (all fields required except timestamp):
+    {
+      "stance":            number, -5 to 5 (half points allowed)
+      "next_meeting_call": {"hike": 0-1, "hold": 0-1, "cut": 0-1}   (sums to 1)
+      "policy_relevance":  number, 0-1
+      "confidence":        number, 0-1
+      "mandate_balance":   number, -1 (worried only about employment) to +1 (worried only about inflation)
+      "mandate_reason":    string, one line
+      "sub_views":         {"inflation": str, "labour_market": str, "preferred_path": str, "urgency": str}
+      "evidence":          2-3 items of {"quote": str, "date": "YYYY-MM-DD", "timestamp": str or null}
+      "summary":           string, one line
+    }
+
+6e. VALIDATE IN CODE after every reply:
+    - Every number must be within its range, otherwise the reply is invalid.
+    - If the three probabilities sum to within 0.02 of 1, rescale them so they sum to exactly 1. Otherwise the reply is invalid.
+    - Check each quote against the text after normalising both: curly quotes become straight, all dashes and hyphens become "-",
+      non-breaking spaces become spaces, runs of whitespace become one space, and everything is lowercased. A quote containing "..." passes if each part is found.
+      Drop any quote that isn't found and note it. If fewer than 2 quotes are left, the reply is invalid.
+    - If stance >= +3 but cut is the most likely call, or stance <= -3 but hike is, flag it. Do not change it.
+    - If a reply is invalid, retry once. If it is still invalid, record the document as failed and move on.
+
+6f. Store the reply, the context that was sent, the validation notes, the model and the prompt version.
+
+=====================================================================
+7. STEP 4: VOTES (no AI)
+=====================================================================
+Each vote counts as a document for its member, dated on the meeting day, with relevance 1 and confidence 1.
+Score each one from its dissent_text, checking these in order:
+    no dissent                                    -> agree   (0, weight 0.3)
+    text contains "raise"                         -> +4      (weight 1.0)
+    text contains "lower"                         -> -4
+    "no change"/"maintain" when majority cut      -> +4
+    "no change"/"maintain" when majority hiked    -> -4
+    "easing bias"                                 -> +3
+    "tightening bias"                             -> -3
+    anything else                                 -> 0, flagged "direction unclear" for a person to review
+
+=====================================================================
+8. STEP 5: COMBINE (plain code, no AI)
+=====================================================================
+Definitions:
+    as_of        the date of the reading (today for the live reading)
+    window       from the last decision date (inclusive) to as_of
+    lookback     the current window plus the two windows before it (each window runs from one decision to the day before the next)
+    prev window  from the decision before that up to the day before the last decision
+    recency      1.0 for the current window, 0.5 for the window before, 0.25 for the one before that (window_decay)
+    weight(doc)  = source_weight[doc_type] x policy_relevance x confidence x recency   (for votes, use the vote weights in Section 3)
+
+5a. Member stance = the weighted average of the stances of ALL the member's documents and votes in the LOOKBACK (three windows),
+    each weighted by recency. Ignore documents with weight 0 and documents not scored yet.
+    Don't base a member's stance on the current window alone. Early in a window most members have said little or nothing,
+    and one speech would set their whole stance. Recency weighting gives fresh remarks the most weight while still using the earlier evidence.
+
+5b. Carry-over: only if a member has NO text document with weight > 0 anywhere in the lookback:
+    stance = the weighted average of {their stance from the lookback ending just before it, weight 1.0} and any DISSENT they cast in the lookback.
+    Leave out agreeing votes. Flag the member "carried over". Go back up to 4 more steps if that is empty too.
+    Also report, for each member, how many documents fall in the current window and how many in the earlier windows.
+
+5c. Member next-meeting call, in this order:
+    1. Take the member's MOST RECENT document with a call and policy_relevance >= 0.5 (this window first, then earlier windows).
+    2. If there is none, call it HOLD and label it "no call".
+    3. If that document is dated BEFORE the last decision, call it HOLD and label it "out of date". The policy has changed since.
+    2b/3b. EXCEPTION to 2 and 3: if the member dissented ON THE RATE (vote score of +4 or -4) at the most recent decision, the call is
+       that dissent's direction (hike or cut), labelled "from their dissent". A dissent at the latest meeting is the freshest signal
+       and lasts until a newer policy document replaces it. Wording dissents (+3/-3) don't count, because those members agreed on the rate.
+    4. Otherwise take the outcome with the highest probability. If two are tied, choose in the order hold, hike, cut, so ties go to hold.
+    Report the probability only when the call is current.
+
+5d. Fed gauge     = (mean of the 12 current voters' stances) + 5, on a scale of 0-10. Every voter counts equally.
+    Gauge change  = gauge - the gauge as of the day before the last decision (worked out the same way, with its own lookback).
+    Tally         = the number of hike / hold / cut calls across the 12.
+    Spread        = the population standard deviation of the 12 stances.
+
+5e. Snapshot: when as_of reaches blackout_start, save the whole reading as of blackout_start, labelled
+    "going into the <date> meeting". Members can't speak publicly during the blackout, so this reading won't change before the meeting.
+
+5f. Path: for each of the last 6 calendar months, take each member's weighted-average stance from ALL of that month's documents and votes,
+    then the Fed average (the mean of members with data that month, and the gauge = that average + 5). Leave a month blank where a member has no data.
+
+=====================================================================
+9. STEP 6: WRITTEN SUMMARY (AI, one call per reading)
+=====================================================================
+Send the final numbers as JSON: the context, the window, the gauge, the previous gauge, the change, the spread and the tally. For each member include
+the stance, the previous stance, the change, the carried-over flag, the call, the probability, the call note, and their latest quote with its date.
+All numbers are rounded to 1 decimal place. Use the prompt below and store the reply. Reuse it whenever the numbers haven't changed (key it on a hash of the JSON).
+
+----- SYSTEM PROMPT (summary-v2) -----
+You write a short read of the Federal Reserve's policy stance for an analyst, based ONLY on the numbers and quotes provided.
+
+The gauge runs from 0 (most dovish) to 10 (most hawkish); 5 means the committee on average is comfortable holding the current rate. Member stances run from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), relative to the current rate. The dual mandate is maximum employment and 2 percent PCE inflation: inflation worries are hawkish, labour-market worries are dovish.
+
+Write at most 4 short sentences, in plain prose for a reader who will see the numbers next to it:
+1. The gauge level and what is driving it (the main theme in members' views).
+2. The two or three members whose stance changed most since the previous window, by name, with the direction. Leave everyone else out.
+3. The next-meeting lean: the tally, and who is calling for a move.
+
+Rules:
+- Explain the numbers; never change, recompute or contradict them. Quote figures exactly as given, but use few of them: the gauge, the tally and at most one number per member you name. Never write a change of zero or "-0.0".
+- Members whose call note says "no call" or "out of date" are assumed to hold; don't present them as having said so.
+- Mention a member as having shifted only if their change is given in the data.
+- Members flagged "carried over" have said nothing new on policy in this window; say so if you mention them.
+- No forecasts or opinions beyond what the data shows.
+----- END SYSTEM PROMPT -----
+Schema: {"summary": string}
+Check the reply in code: every member name must appear in full whenever it appears. Small models sometimes mangle names
+(e.g. "Michelle W. Experience"). Retry once if not, and flag it if the retry also fails.
+
+=====================================================================
+10. OUTPUT TO PRODUCE
+=====================================================================
+  - Headline: "Fed gauge 6.4/10 (+0.3 vs previous window) · window 28 Oct - 21 Nov 2026".
+  - Tally line: "Dec: 7 hold / 5 hike / 0 cut", followed by the spread.
+  - The AI summary.
+  - Member table: name, stance, change, call with probability or "no call" / "out of date" / "from dissent", documents in the window
+    (plus how many from the earlier lookback windows, and how many are unscored), a "carried over" flag, and the latest quote
+    with its date and link. Take the latest quote from the member's most recent document with policy_relevance >= 0.5, not from an off-topic speech.
+  - Detail for each member: every scored document with its stance, weight breakdown, call, mandate balance,
+    summary and evidence quotes.
+  - The 6-month path: the Fed line plus a member-by-month grid.
+  - When a blackout has started: the "going into the meeting" snapshot.
+  - Run details: the model, the prompt version, the number of AI calls, and any documents still unscored or failed.
+
+=====================================================================
+11. QUALITY CHECKS (run in this order before trusting the output)
+=====================================================================
+C1. Test call: one small structured call, and confirm the exact model ID you are using.
+C2. Speaker extraction (if transcripts are used): read one by hand and check what was kept and what was marked uncertain.
+C3. Score 5 varied documents (an outlook speech, a dissent statement, a vague or conceptual speech, and so on) and read the full JSON.
+    Check that the stance matches the wording, that relevance and confidence are low for vague speeches, and that every quote is word for word.
+C4. Consistency: score 3 documents 3 times each. The target is a stance range of 1 point or less.
+    (Results: Gemini 4 Hydrogen at temperature 0 ranged 0 to 0.5.)
+C5. Backtest: rebuild the reading as of the day before the blackout for a past meeting, and compare each member's call with how they actually voted.
+    ALWAYS compare against the naive baseline "everyone votes with the majority". If the method only matches the baseline, it has
+    told you nothing. What matters is whether it catches the dissenters without raising false alarms.
+C6. Only after that, run everything, and report the documents scored, AI calls made and any failures.
+
+=====================================================================
+12. WHAT WE LEARNED IN TESTING (Oct 27-28 2026 meeting: 10-2 hold; Cook and Hammack dissented for a hike)
+=====================================================================
+  - Original rules and prompt v1 (Hydrogen): 4/12 calls right. The failures came from the rules, not the model:
+    ties were broken towards hike, calls made before the previous hike were treated as current, and members with no call counted as wrong.
+  - With the Step 5c rules added (hold default, out-of-date calls, ties to hold): 9/12, and BOTH dissenters caught.
+    The remaining misses were members who wanted more hikes "over time" but voted to hold.
+  - Prompt v2 told the model that "more hikes, timing unstated" means hold. It got 10/12, but only by calling everyone hold,
+    so it missed both dissenters. It was rejected. Don't tune the prompt against one meeting.
+  - The model matters most for the next-meeting CALL, less for the stance. Gemini 3.5 Flash-Lite was perfectly consistent
+    (repeat stances identical) and gave similar stances (gauge 6.6 against 6.8 for Hydrogen), but its calls scored 6/12: it gave
+    both dissenters a 5% hike probability and called hikes for four members who held. Use a stronger model for calls,
+    or treat a small model's calls as weak.
+  - Current-window-only stances relied on too little evidence: just after a decision, most members had one document or none,
+    and several were "carried over". The three-window recency lookback (1.0 / 0.5 / 0.25) fixed this without changing any calls.
+  - Agreeing votes at full weight (1.0) pulled every stance towards 0 (a +3 speech plus an agree vote gave +1.1).
+    A weight of 0.3 keeps the stance close to what the member says.
+  - The first summary prompt produced long, number-heavy text ("up 1.2 to 1.2", "-0.0"). Summary-v2 limits it to 4 sentences
+    and the three biggest movers.
+  - Each step is cheap: a document is about 4-6k input tokens and 0.5k output tokens. A full 6-month run for 12 voters is about 45 AI calls
+    once the prefilter has removed off-topic speeches.
+
+=====================================================================
+13. HOW TO RUN IT, STEP BY STEP (for the AI running this skill)
+=====================================================================
+ 1. Load the config (Section 3). Choose as_of (today for a live reading).
+ 2. Find the current voters (the 12 at the last decision on or before as_of).
+ 3. Gather their documents for the path range (6 months), which also covers the three-window lookback and the window before it. Order them: current window first,
+    then the previous window, then the rest, newest first, so a partial run still gives a usable live reading.
+ 4. Skip documents already scored by this model and prompt version. Run the prefilter. Score the rest (Step 3), validating each one.
+    Stop cleanly at the daily call limit; the next run carries on.
+ 5. Score the votes (Step 4).
+ 6. Combine (Step 5). If as_of >= blackout_start, also save the snapshot.
+ 7. Write the summary (Step 6) unless the numbers are unchanged.
+ 8. Produce the output (Section 10), and list the documents still unscored and any failures.

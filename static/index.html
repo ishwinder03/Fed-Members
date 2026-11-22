@@ -10,6 +10,7 @@
     --accent: #1f4e8c; --accent-soft: #e8eef7; --dissent: #b42318; --dissent-soft: #fdecea;
     --warn: #8a5a00; --warn-soft: #fff4dc; --ok: #1e7a46;
     --hike: #b54708; --cut: #1f4e8c; --hold: #475467;
+    --hawk: #d03b3b; --dove: #2a6fdb; --mid: #f0efec;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -17,6 +18,7 @@
       --accent: #7fa8e6; --accent-soft: #1f2a3a; --dissent: #f97066; --dissent-soft: #3a1d1b;
       --warn: #f5c26b; --warn-soft: #3a2f17; --ok: #5fcf8f;
       --hike: #fdb022; --cut: #7fa8e6; --hold: #98a2b3;
+      --hawk: #e5584f; --dove: #5b93ee; --mid: #383835;
     }
   }
   * { box-sizing: border-box; }
@@ -90,6 +92,11 @@
   table.loads td, table.loads th { padding: 3px 10px 3px 0; text-align: left; font-variant-numeric: tabular-nums; }
   ul.gaps { margin: 6px 0; padding-left: 20px; }
   ul.gaps li { margin: 3px 0; }
+  .ctl { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .ctl[hidden], section[hidden] { display: none; }
+  select { font: inherit; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 8px; }
+  .logbox { white-space: pre-wrap; font: 12px/1.4 ui-monospace, Menlo, monospace; max-height: 260px; overflow: auto;
+            background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 12px; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; } }
 </style>
@@ -97,14 +104,30 @@
 <body>
 <header>
   <h1>FOMC voters</h1>
-  <div class="seg" id="windows"></div>
-  <span id="timer" class="muted"></span>
-  <button id="logbtn" title="Show load log and timings">Log</button>
-  <button id="load" class="primary">Load</button>
+  <div class="seg" id="tabs"><button data-tab="data" class="on">Votes &amp; speeches</button><button data-tab="analysis">Analysis</button></div>
+  <span class="ctl" data-for="data">
+    <div class="seg" id="windows"></div>
+    <span id="timer" class="muted"></span>
+    <button id="copyall" title="Copy every collected speech, statement and essay in this window to the clipboard, oldest first">Copy all text</button>
+    <button id="logbtn" title="Show load log and timings">Log</button>
+    <button id="load" class="primary">Load</button>
+  </span>
+  <span class="ctl" data-for="analysis" hidden>
+    <select id="model" title="Model used for the analysis"></select>
+    <span id="atimer" class="muted"></span>
+    <button id="alogbtn" title="Show analysis log">Log</button>
+    <button id="analyse" class="primary">Run analysis</button>
+  </span>
 </header>
 <main>
-  <div id="logwrap"><div id="log"></div><div id="loads"></div></div>
-  <div id="app"><div class="empty">Loading…</div></div>
+  <section data-tab="data">
+    <div id="logwrap"><div id="log"></div><div id="loads"></div></div>
+    <div id="app"><div class="empty">Loading…</div></div>
+  </section>
+  <section data-tab="analysis" hidden>
+    <div id="alogwrap" hidden><div id="alog" class="logbox"></div></div>
+    <div id="ana"><div class="empty">Loading…</div></div>
+  </section>
 </main>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -321,6 +344,22 @@ async function showMember(id, scroll) {
   if (scroll) $("#detail").scrollIntoView({behavior: "smooth", block: "start"});
 }
 
+$("#copyall").onclick = async () => {
+  const btn = $("#copyall"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Copying…";
+  try {
+    const text = await (await fetch("/api/export?window=" + win)).text();
+    try { await navigator.clipboard.writeText(text); }
+    catch {  // clipboard API unavailable: fall back to a hidden textarea
+      const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    const n = (text.match(/^={78}$/gm) || []).length;
+    btn.textContent = `Copied ${n} items (${Math.round(text.length / 1000)}k chars)`;
+  } catch (e) { btn.textContent = "Copy failed"; console.error(e); }
+  setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 2500);
+};
+
 $("#logbtn").onclick = () => { const l = $("#logwrap"); l.style.display = l.style.display === "block" ? "none" : "block"; };
 
 $("#load").onclick = async () => {
@@ -348,11 +387,23 @@ async function poll() {
   await refresh();
 }
 
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(tab) {
+  store.set("tab", tab);
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll("[data-for]").forEach(el => el.hidden = el.dataset.for !== tab);
+  document.querySelectorAll("main > section").forEach(el => el.hidden = el.dataset.tab !== tab);
+  if (tab === "analysis") window.Analysis?.show();
+}
+showTab(store.get("tab") || "data");
+
 refresh().then(async () => {
   const st = await (await fetch("/api/load")).json();
   if (st.running) poll();
   else $("#log").textContent = st.log.join("\n");  // last saved load log
 });
 </script>
+<script src="/static/analysis.js"></script>
+<script>if (store.get("tab") === "analysis") Analysis.show();</script>
 </body>
 </html>

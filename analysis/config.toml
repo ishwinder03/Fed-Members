@@ -1,0 +1,49 @@
+# Every analysis setting lives here. Changing model or prompt_version makes documents re-score
+# (results are cached per document, model and prompt version).
+
+provider = "gemini"                      # "gemini" now; "claude" once providers/claude.py is filled in
+model = "gemini-3.5-flash-lite"          # default for the Analysis tab (500 calls/day)
+fallback_model = ""                      # model that scores what the default can't once its cap is reached ("" = none)
+models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-neon"]   # model picker
+prompt_version = "score-v1"              # v2 (call rule for "more hikes, timing unstated") over-corrected to all-hold
+                                         # in the Oct 2026 backtest, so v1 is used
+summary_prompt_version = "summary-v2"    # v2: shorter, three biggest movers only
+temperature = 0
+
+[limits]                                 # limits are per project and per model
+requests_per_minute = 5
+requests_per_day = 20                    # default cap per model per day (free tier)
+max_retries = 5                          # on 429 / 5xx: honour retryDelay if given, else 15s, 30s, 60s ...
+
+[limits.daily_cap]                       # per-model caps; 0 = don't call (paid credits not approved)
+"gemini-3.5-flash-lite" = 500
+"gemini-3.8-flash" = 20
+"gemini-3.5-flash" = 20
+"gemini-4-hydrogen" = 0                  # paid credits: only when approved
+"gemini-4-neon" = 0
+
+[source_weights]
+vote = 1.0                               # a dissent
+vote_agree = 0.3                         # voting with the majority (scored 0); low so it doesn't swamp speeches
+statement = 1.0                          # written statement about a dissent
+essay = 1.0
+speech = 0.8                             # prepared speech
+qa = 0.6                                 # one-on-one Q&A (none collected yet)
+panel = 0.4                              # panel / news (none collected yet)
+
+[vote_scores]                            # relative to the meeting's decision
+agree = 0
+dissent_tighter_rate = 4                 # wanted a hike, or a hold when the majority cut
+dissent_looser_rate = -4                 # wanted a cut, or a smaller hike
+dissent_tighter_wording = 3              # same rate, but objected to dovish wording / easing bias
+dissent_looser_wording = -3
+
+[prefilter]                              # no-AI skip for speeches with no monetary-policy content
+min_hits = 3                             # fewer keyword hits than this -> relevance 0, no AI call
+keywords = ["inflation", "monetary policy", "policy rate", "federal funds", "labor market",
+            "unemployment", "rate cut", "rate increase", "price stability", "maximum employment", "FOMC"]
+
+[combine]
+window_decay = [1.0, 0.5, 0.25]          # weight of documents from the current window, the one before, and the one before that
+blackout_days = 10                       # fallback only; the Fed's rule (second Saturday before) is used
+path_months = 6

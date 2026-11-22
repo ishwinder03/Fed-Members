@@ -17,6 +17,12 @@ from fedwatch.loader import Loader
 from fedwatch.net import Fetcher
 from fedwatch.people import PEOPLE, display_name
 
+try:  # the Analysis tab needs python-dotenv and google-genai; the collector works without them
+    from analysis import api as analysis_api
+except ImportError as e:
+    analysis_api = None
+    print(f"Analysis tab disabled ({e}); pip install -r requirements.txt")
+
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 PORT = 8765
@@ -108,6 +114,20 @@ def member(pid, window):
     }
 
 
+def export_text(window):
+    """Every collected text in the window, oldest first, then by speaker, with a header per item."""
+    since = windows.cutoff(window).isoformat()
+    rows = q("SELECT person_id, date, title, url, kind, text FROM speeches WHERE kind!='no_text' AND date>=?", (since,))
+    rows.sort(key=lambda r: (r["date"], display_name(r["person_id"]) if r["person_id"] in PEOPLE else r["person_id"]))
+    out = [f"FOMC voters: everything said, {windows.WINDOWS[window]} (since {since}), {len(rows)} items, oldest first\n"]
+    for r in rows:
+        who = display_name(r["person_id"]) if r["person_id"] in PEOPLE else r["person_id"]
+        inst = PEOPLE.get(r["person_id"], {}).get("institution", "")
+        out.append(f"{'=' * 78}\n{r['date']} | {who} ({inst}) | {r['kind']}\n{r['title']}\n{r['url']}\n{'-' * 78}\n\n"
+                   f"{(r['text'] or '').strip()}\n")
+    return "\n".join(out)
+
+
 def window_arg(args):
     w = args.get("window", [windows.DEFAULT])[0]
     return w if w in windows.WINDOWS else windows.DEFAULT
@@ -127,6 +147,13 @@ class Handler(BaseHTTPRequestHandler):
         args = parse_qs(u.query)
         if u.path == "/":
             return self._send((ROOT / "static" / "index.html").read_bytes(), "text/html; charset=utf-8")
+        if u.path == "/static/analysis.js":
+            return self._send((ROOT / "static" / "analysis.js").read_bytes(), "text/javascript; charset=utf-8")
+        if u.path.startswith("/api/analys"):
+            if not analysis_api:
+                return self._send({"error": "analysis disabled: pip install -r requirements.txt"}, status=503)
+            body = analysis_api.get(u.path, args)
+            return self._send(body if body is not None else {"error": "not found"}, status=200 if body is not None else 404)
         if u.path == "/api/summary":
             return self._send(summary(window_arg(args)))
         if u.path.startswith("/api/member/"):
@@ -134,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/speech":
             rows = q("SELECT * FROM speeches WHERE url=?", (args.get("url", [""])[0],))
             return self._send(rows[0] if rows else {}, status=200 if rows else 404)
+        if u.path == "/api/export":
+            return self._send(export_text(window_arg(args)).encode(), "text/plain; charset=utf-8")
         if u.path == "/api/load":
             s = load_state
             elapsed = (time.time() - s["started"]) if s["running"] else s["elapsed"]
@@ -153,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
             if not load_state["running"]:
                 threading.Thread(target=run_load, args=(w,), daemon=True).start()
             return self._send({"started": True, "window": w})
+        if u.path == "/api/analyse" and analysis_api:
+            return self._send(analysis_api.start(parse_qs(u.query).get("model", [None])[0]))
         self._send({"error": "not found"}, status=404)
 
     def log_message(self, *a):

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-skin="house">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FOMC board · 22 Nov 2026 16:56</title>
+<title>FOMC board · 22 Nov 2026 23:24</title>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #fff; --ink: #1c2330; --muted: #667085; --line: #e3e6eb;
@@ -21,10 +21,7 @@
       --hawk: #e5584f; --dove: #5b93ee; --mid: #383835;
     }
   }
-  /* HSBC theme: red / black / white / greys. "Classic" (the original look) is the block above;
-     pick either with the Theme switch in the header. A full copy of the classic page is in
-     static/themes/index_classic_backup.html. */
-  :root[data-skin="hsbc"] {
+  :root[data-skin="house"] {
     --bg: #f3f3f3; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b6b; --line: #d7d8d6;
     --accent: #db0011; --accent-soft: #fbe5e7; --dissent: #a8000b; --dissent-soft: #fbe5e7;
     --warn: #8a5a00; --warn-soft: #fff4dc; --ok: #1e7a46;
@@ -32,7 +29,7 @@
     --hawk: #db0011; --dove: #3e6c8a; --mid: #ececec;
   }
   @media (prefers-color-scheme: dark) {
-    :root[data-skin="hsbc"] {
+    :root[data-skin="house"] {
       --bg: #161616; --panel: #222222; --ink: #f2f2f2; --muted: #a3a3a3; --line: #363636;
       --accent: #ff3347; --accent-soft: #3a1518; --dissent: #ff5c69; --dissent-soft: #3a1518;
       --warn: #f5c26b; --warn-soft: #3a2f17; --ok: #5fcf8f;
@@ -40,9 +37,9 @@
       --hawk: #e0303f; --dove: #5f8fb0; --mid: #3a3a3a;
     }
   }
-  :root[data-skin="hsbc"] header { border-bottom: 3px solid var(--accent); }
-  :root[data-skin="hsbc"] button.primary { border-radius: 0; }
-  :root[data-skin="hsbc"] .panel, :root[data-skin="hsbc"] .card, :root[data-skin="hsbc"] .mchart { border-radius: 2px; }
+  :root[data-skin="house"] header { border-bottom: 3px solid var(--accent); }
+  :root[data-skin="house"] button.primary { border-radius: 0; }
+  :root[data-skin="house"] .panel, :root[data-skin="house"] .card, :root[data-skin="house"] .mchart { border-radius: 2px; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -125,8 +122,7 @@
 </head>
 <body>
 <header>
-  <h1>FOMC voters <span class="snapnote">snapshot · 22 Nov 2026 16:56</span></h1>
-  <select id="skin" title="Colour theme" class="ctl-skin"><option value="hsbc">HSBC colours</option><option value="classic">Classic</option></select>
+  <h1>FOMC voters <span class="snapnote">snapshot · 22 Nov 2026 23:24</span></h1>
   <button id="publishbtn" title="Save a view-only copy of the board as view_for_work.html and push it to the GitHub repo">Publish to GitHub</button>
   <div class="seg" id="tabs"><button data-tab="data" class="on">Votes &amp; speeches</button><button data-tab="analysis">Analysis</button></div>
   <span class="ctl" data-for="data">
@@ -191,10 +187,6 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
-// colour theme: HSBC by default, "classic" = the original look
-function setSkin(s) { document.documentElement.dataset.skin = s; store.set("skin", s); $("#skin").value = s; }
-setSkin(store.get("skin") || "hsbc");
-$("#skin").onchange = e => setSkin(e.target.value);
 let S = null, selected = null, win = store.get("window") || "1y", tick = null;
 
 function fmtDuration(s) {

@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FOMC Voters</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1c2330; --muted: #667085; --line: #e3e6eb;
+    --accent: #1f4e8c; --accent-soft: #e8eef7; --dissent: #b42318; --dissent-soft: #fdecea;
+    --warn: #8a5a00; --warn-soft: #fff4dc; --ok: #1e7a46;
+    --hike: #b54708; --cut: #1f4e8c; --hold: #475467;
+    --hawk: #d03b3b; --dove: #2a6fdb; --mid: #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1f27; --ink: #e6e9ef; --muted: #98a2b3; --line: #2b323d;
+      --accent: #7fa8e6; --accent-soft: #1f2a3a; --dissent: #f97066; --dissent-soft: #3a1d1b;
+      --warn: #f5c26b; --warn-soft: #3a2f17; --ok: #5fcf8f;
+      --hike: #fdb022; --cut: #7fa8e6; --hold: #98a2b3;
+      --hawk: #e5584f; --dove: #5b93ee; --mid: #383835;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--panel);
+           position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; min-width: 140px; }
+  button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); padding: 6px 12px; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; padding: 7px 18px; }
+  button:disabled { opacity: .6; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 6px 12px; border-right: 1px solid var(--line); }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  #timer { font-variant-numeric: tabular-nums; font-size: 13px; }
+  #timer.running { color: var(--accent); font-weight: 600; }
+  .muted { color: var(--muted); }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px 24px 60px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 26px 0 10px; }
+  h2 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .banner { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 10px 14px; margin-top: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+          cursor: pointer; text-align: left; }
+  .card:hover, .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card .name { font-weight: 600; font-size: 15px; }
+  .card .role { color: var(--muted); font-size: 12.5px; min-height: 18px; }
+  .stats { display: flex; gap: 14px; margin-top: 8px; font-size: 13px; }
+  .stats b { font-size: 16px; }
+  .stats .d b { color: var(--dissent); }
+  .extra { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px;
+           background: var(--accent-soft); color: var(--accent); font-weight: 600; vertical-align: 1px; }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.dis { background: var(--dissent-soft); color: var(--dissent); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  #detail { margin-top: 14px; }
+  #detail .head { display: flex; align-items: flex-start; gap: 12px; }
+  #detail .head > div { flex: 1; }
+  #detail h3 { margin: 0 0 2px; font-size: 18px; }
+  .votes-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+  .vchip { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12.5px; }
+  .vchip.against { border-color: var(--dissent); background: var(--dissent-soft); }
+  .speech { border-top: 1px solid var(--line); padding: 10px 0; }
+  .speech .meta { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .speech .date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 86px; }
+  .speech a { color: var(--accent); }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .fulltext { white-space: pre-wrap; max-height: 480px; overflow: auto; background: var(--bg);
+              border-radius: 6px; padding: 12px 14px; margin-top: 8px; font-size: 13.5px; line-height: 1.55; }
+  .gridwrap { overflow-x: auto; }
+  table.grid { border-collapse: collapse; width: 100%; background: var(--panel); font-size: 13px; }
+  .grid th, .grid td { border: 1px solid var(--line); padding: 6px 8px; text-align: center; vertical-align: middle; }
+  .grid th:first-child, .grid td:first-child { text-align: left; white-space: nowrap; position: sticky; left: 0; background: var(--panel); }
+  .grid thead th { font-weight: 600; white-space: nowrap; }
+  .grid .outcome th { font-weight: 700; font-size: 12.5px; }
+  .grid .outcome .hike { color: var(--hike); } .grid .outcome .cut { color: var(--cut); } .grid .outcome .hold { color: var(--hold); }
+  .grid td.for { color: var(--ok); }
+  .grid td.against { background: var(--dissent-soft); color: var(--dissent); font-weight: 600; white-space: nowrap; }
+  .grid td.against small { display: block; font-weight: 400; color: var(--ink); font-size: 11.5px; }
+  .grid td.none { color: var(--muted); }
+  .grid tr.former td:first-child { color: var(--muted); }
+  .grid tfoot td { font-size: 11.5px; color: var(--muted); }
+  #logwrap { display: none; margin-top: 12px; }
+  #log { white-space: pre-wrap; font: 12px/1.4 ui-monospace, Menlo, monospace; max-height: 260px;
+         overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  table.loads { font-size: 12.5px; border-collapse: collapse; margin-top: 8px; }
+  table.loads td, table.loads th { padding: 3px 10px 3px 0; text-align: left; font-variant-numeric: tabular-nums; }
+  ul.gaps { margin: 6px 0; padding-left: 20px; }
+  ul.gaps li { margin: 3px 0; }
+  .ctl { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .ctl[hidden], section[hidden] { display: none; }
+  select { font: inherit; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 8px; }
+  .logbox { white-space: pre-wrap; font: 12px/1.4 ui-monospace, Menlo, monospace; max-height: 260px; overflow: auto;
+            background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 12px; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FOMC voters</h1>
+  <div class="seg" id="tabs"><button data-tab="data" class="on">Votes &amp; speeches</button><button data-tab="analysis">Analysis</button></div>
+  <span class="ctl" data-for="data">
+    <div class="seg" id="windows"></div>
+    <span id="timer" class="muted"></span>
+    <button id="copyall" title="Copy every collected speech, statement and essay in this window to the clipboard, oldest first">Copy all text</button>
+    <button id="logbtn" title="Show load log and timings">Log</button>
+    <button id="load" class="primary">Load</button>
+  </span>
+  <span class="ctl" data-for="analysis" hidden>
+    <select id="model" title="Model used for the analysis"></select>
+    <span id="atimer" class="muted"></span>
+    <button id="alogbtn" title="Show analysis log">Log</button>
+    <button id="analyse" class="primary">Run analysis</button>
+  </span>
+</header>
+<main>
+  <section data-tab="data">
+    <div id="logwrap"><div id="log"></div><div id="loads"></div></div>
+    <div id="app"><div class="empty">Loading…</div></div>
+  </section>
+  <section data-tab="analysis" hidden>
+    <div id="alogwrap" hidden><div id="alog" class="logbox"></div></div>
+    <div id="ana"><div class="empty">Loading…</div></div>
+  </section>
+</main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtDate = d => new Date(d + "T12:00:00").toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"});
+const shortDate = d => new Date(d + "T12:00:00").toLocaleDateString("en-US", {month: "short", day: "numeric", year: "2-digit"});
+const KIND = {speech: ["speech", ""], statement: ["vote statement", "warn"], essay: ["essay", ""], no_text: ["no transcript", "warn"]};
+const WIN_LABEL = {ytd: "YTD", "1y": "1y", "6m": "6m", "3m": "3m"};
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+let S = null, selected = null, win = store.get("window") || "1y", tick = null;
+
+function fmtDuration(s) {
+  if (s == null) return "";
+  s = Math.round(s);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+// "preferred to lower the target range ... by 1/2 percentage point" -> "wanted 50bps cut"
+function bpsFrom(t) {
+  const m = /by ((\d+)-)?(\d+)\/(\d+) percentage point|by (\d+) percentage point/.exec(t);
+  if (!m) return null;
+  if (m[5]) return Number(m[5]) * 100;
+  return Math.round(((Number(m[2]) || 0) + Number(m[3]) / Number(m[4])) * 100);
+}
+function shortDissent(t) {
+  const b = bpsFrom(t);
+  if (/preferred to lower/.test(t)) return `wanted ${b ?? "?"}bps cut`;
+  if (/preferred to raise/.test(t)) return `wanted ${b ?? "?"}bps hike`;
+  if (/preferred no change|preferred to maintain/.test(t)) return "wanted hold";
+  if (/easing bias/.test(t)) return "agreed hold, objected to easing bias";
+  return "other — see note";
+}
+function outcome(m) {
+  if (!m.decision) return `<span class="muted">?</span>`;
+  if (m.decision === "hold") return `<span class="hold">Hold</span>`;
+  return `<span class="${m.decision}">${m.decision === "hike" ? "Hike" : "Cut"} ${m.decision_bps}bps</span>`;
+}
+
+function renderWindows() {
+  $("#windows").innerHTML = Object.keys(WIN_LABEL).map(w =>
+    `<button data-w="${w}" class="${w === win ? "on" : ""}" title="${esc(S?.windows?.[w] || "")}">${WIN_LABEL[w]}</button>`).join("");
+  document.querySelectorAll("#windows button").forEach(b => b.onclick = () => {
+    win = b.dataset.w; store.set("window", win); renderWindows(); refresh();
+  });
+}
+
+async function refresh() {
+  try {
+    S = await (await fetch("/api/summary?window=" + win)).json();
+    if (!S.windows) {  // page is newer than the running server process
+      $("#app").innerHTML = `<div class="banner">The server is running an older version of the code. Stop it (Ctrl-C in its terminal) and start it again with <code>python3 server.py</code>, then reload this page.</div>`;
+      return;
+    }
+    renderWindows();
+    showLastLoad();
+    render();
+  } catch (e) {
+    $("#app").innerHTML = `<div class="banner">Could not show the data: ${esc(e.message)}. Try reloading the page; if it persists, restart <code>python3 server.py</code>.</div>`;
+    console.error(e);
+    return;
+  }
+  if (selected && S.members.some(m => m.id === selected)) showMember(selected, false);
+  else selected = null;
+}
+
+function showLastLoad() {
+  if (tick) return;  // a load is running; the live timer owns this spot
+  const L = S.last_load;
+  const t = $("#timer");
+  t.className = "muted";
+  t.textContent = L ? ["Last load", WIN_LABEL[L.window], L.duration_s != null && `took ${fmtDuration(L.duration_s)}`,
+                       L.finished_at.replace("T", " ").slice(0, 16)].filter(Boolean).join(" · ").replace("Last load · ", "Last load: ")
+                    : "Never loaded";
+  $("#loads").innerHTML = S.recent_loads.length ? `<table class="loads"><tr class="muted"><th>Finished</th><th>Window</th><th>Took</th><th>New items</th><th>Requests</th><th></th></tr>${
+    S.recent_loads.map(l => `<tr><td>${esc(l.finished_at.replace("T", " "))}</td><td>${WIN_LABEL[l.window] || "—"}</td><td>${fmtDuration(l.duration_s) || "—"}</td><td>${l.new_speeches}</td><td>${l.requests}</td><td>${l.ok ? "" : "failed"}</td></tr>`).join("")}</table>` : "";
+}
+
+function roleLine(m) {
+  const parts = [];
+  if (m.fomc_role) parts.push(m.fomc_role + " of the FOMC");
+  if (m.title) parts.push(m.institution === "Board of Governors" && m.title !== "Governor" ? m.title + ", Board of Governors" : m.title);
+  else if (m.institution) parts.push(m.institution);
+  return parts.join(" · ");
+}
+
+function card(m) {
+  const extras = Object.entries(m.other_items).map(([k, n]) => `${n} ${KIND[k] ? KIND[k][0] : k}${n > 1 && k !== "no_text" ? "s" : ""}`);
+  const sp = m.speeches_tracked ? `<span><b>${m.speeches}</b> speeches (${WIN_LABEL[win]})</span>` : `<span class="muted">speeches not tracked</span>`;
+  return `<button class="card ${selected === m.id ? "sel" : ""}" data-id="${m.id}">
+    <div class="name">${esc(m.name)}</div>
+    <div class="role">${esc(roleLine(m))}</div>
+    <div class="stats">${sp}<span class="d"><b>${m.dissents}</b> dissent${m.dissents === 1 ? "" : "s"}</span></div>
+    ${extras.length ? `<div class="extra">also ${esc(extras.join(", "))}</div>` : ""}
+  </button>`;
+}
+
+function render() {
+  const banner = S.covered_since && S.covered_since > S.since
+    ? `<div class="banner">Data is only loaded back to ${fmtDate(S.covered_since)}. Press <b>Load</b> to fetch ${esc(S.windows[win].toLowerCase())} (since ${fmtDate(S.since)}).</div>` : "";
+  if (!S.meetings.length) {
+    $("#app").innerHTML = banner + `<div class="empty">No data for ${esc(S.windows[win].toLowerCase())} yet. Press <b>Load</b> to fetch it.</div>`;
+    return;
+  }
+  const cur = S.members.filter(m => m.current), former = S.members.filter(m => !m.current);
+  const last = S.meetings[S.meetings.length - 1];
+  $("#app").innerHTML = banner + `
+    <h2>Current voters <span class="sub">· as of the ${fmtDate(last.date)} meeting (${cur.length}) · counts since ${fmtDate(S.since)}</span></h2>
+    <div class="cards">${cur.map(card).join("")}</div>
+    ${former.length ? `<h2>Voted earlier in this window</h2><div class="cards">${former.map(card).join("")}</div>` : ""}
+    <div id="detail"></div>
+    <h2>Voting history</h2>
+    <div class="gridwrap">${grid()}</div>
+    <h2>Economic data <span class="sub">· actual vs expected, by month of data</span></h2>
+    ${window.Macro ? Macro.section(S) : ""}
+    <h2>Not collected / needs attention</h2>
+    <div class="panel">${gaps()}</div>`;
+  document.querySelectorAll(".card").forEach(b => b.onclick = () => {
+    if (selected === b.dataset.id) closeMember(); else showMember(b.dataset.id, true);
+  });
+}
+
+function grid() {
+  const byKey = {};
+  S.votes.forEach(v => byKey[v.person_id + "|" + v.meeting_date] = v);
+  const head = S.meetings.map(m => `<th>${shortDate(m.date)}</th>`).join("");
+  const out = S.meetings.map(m => `<th title="${esc(m.target_range || "")}">${outcome(m)}<br><span class="muted" style="font-weight:400">${m.tally_for}–${m.tally_against}</span></th>`).join("");
+  const rows = S.members.map(p => `<tr class="${p.current ? "" : "former"}"><td>${esc(p.name)}</td>${S.meetings.map(m => {
+    const v = byKey[p.id + "|" + m.date];
+    if (!v) return `<td class="none">—</td>`;
+    if (v.vote === "for") return `<td class="for" title="agree">✓</td>`;
+    return `<td class="against" title="${esc(v.dissent_text)}">Dissent<small>${esc(shortDissent(v.dissent_text))}</small></td>`;
+  }).join("")}</tr>`).join("");
+  const foot = S.meetings.map(m => {
+    const src = m.roster_source === "provisional" ? `<span class="badge warn">provisional</span>` : `from ${m.roster_source}`;
+    const chk = m.check_ok ? "" : ` <span class="badge dis" title="${esc(m.check_notes)}">check failed</span>`;
+    return `<td>${src}${chk}<br><a href="${m.statement_url}" target="_blank">statement</a>${m.minutes_url ? ` · <a href="${m.minutes_url}" target="_blank">minutes</a>` : ""}</td>`;
+  }).join("");
+  const notes = S.meetings.map(m => {
+    const ds = S.votes.filter(v => v.meeting_date === m.date && v.vote === "against");
+    const byText = {};
+    ds.forEach(v => (byText[v.dissent_text] = byText[v.dissent_text] || []).push((S.members.find(x => x.id === v.person_id) || {name: v.person_id}).name));
+    return Object.entries(byText).map(([t, names]) => `<li><b>${shortDate(m.date)}</b>: ${esc(names.join(", "))} — ${esc(t)}</li>`).join("");
+  }).join("");
+  return `<table class="grid"><thead><tr><th>Meeting</th>${head}</tr>
+      <tr class="outcome"><th>Decision · vote</th>${out}</tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr><td>Roster source</td>${foot}</tr></tfoot></table>
+    <p class="muted" style="font-size:12px">✓ agree with the decision · — not a voter at that meeting · hover a decision for the target range</p>
+    ${notes ? `<p style="margin-bottom:4px"><b>Dissents, as worded in the FOMC statement</b></p><ul class="gaps">${notes}</ul>` : ""}`;
+}
+
+function gaps() {
+  const name = id => (S.members.find(m => m.id === id) || {name: id}).name;
+  let h = "";
+  const untracked = S.members.filter(m => !m.speeches_tracked);
+  if (untracked.length) h += `<p><b>Speeches not collected</b> for voters outside the 2026 rotation: ${esc(untracked.map(m => m.name).join(", "))}.</p>`;
+  if (S.no_text.length) h += `<p><b>Listed but no text published</b> (counted separately, not as speeches):</p><ul class="gaps">${
+    S.no_text.map(s => `<li>${esc(name(s.person_id))} · ${fmtDate(s.date)} · <a href="${esc(s.url)}" target="_blank">${esc(s.title)}</a></li>`).join("")}</ul>`;
+  if (S.unverified.length) h += `<p><b>Speaker name not found on page:</b></p><ul class="gaps">${
+    S.unverified.map(s => `<li>${esc(name(s.person_id))} · <a href="${esc(s.url)}" target="_blank">${esc(s.title)}</a></li>`).join("")}</ul>`;
+  if (S.issues.length) h += `<p><b>Issues from the last load:</b></p><ul class="gaps">${
+    S.issues.map(i => `<li>[${esc(i.scope)}] ${esc(i.message)}</li>`).join("")}</ul>`;
+  return h || `<span class="muted">Nothing outstanding.</span>`;
+}
+
+function closeMember() {
+  selected = null;
+  $("#detail").innerHTML = "";
+  document.querySelectorAll(".card").forEach(b => b.classList.remove("sel"));
+}
+
+async function showMember(id, scroll) {
+  selected = id;
+  document.querySelectorAll(".card").forEach(b => b.classList.toggle("sel", b.dataset.id === id));
+  const m = S.members.find(x => x.id === id);
+  const d = await (await fetch(`/api/member/${id}?window=${win}`)).json();
+  if (selected !== id) return;
+  const voteBy = Object.fromEntries(d.votes.map(v => [v.meeting_date, v]));
+  const chips = S.meetings.map(mt => {
+    const v = voteBy[mt.date];
+    if (!v) return `<span class="vchip muted">${shortDate(mt.date)}: not a voter</span>`;
+    if (v.vote === "for") return `<span class="vchip">${shortDate(mt.date)}: <b>agree</b></span>`;
+    return `<span class="vchip against" title="${esc(v.dissent_text)}">${shortDate(mt.date)}: <b>dissent</b> — ${esc(shortDissent(v.dissent_text))}</span>`;
+  }).join("");
+  const items = d.speeches.map(s => {
+    const [label, cls] = KIND[s.kind] || [s.kind, ""];
+    return `<div class="speech">
+      <div class="meta"><span class="date">${fmtDate(s.date)}</span>
+        <a href="${esc(s.url)}" target="_blank">${esc(s.title)}</a>
+        ${s.kind !== "speech" ? `<span class="badge ${cls}">${label}</span>` : ""}</div>
+      ${s.kind === "no_text" ? `<div class="extra">No text on the page (video/audio or short notice only).</div>`
+        : `<details data-url="${esc(s.url)}"><summary>Full text · ${s.text_chars.toLocaleString()} characters</summary><div class="fulltext">Loading…</div></details>`}
+    </div>`;
+  }).join("");
+  $("#detail").innerHTML = `<div class="panel">
+    <div class="head"><div><h3>${esc(m.name)}</h3><div class="muted">${esc(roleLine(m))}</div></div>
+      <button id="closeDetail" title="Collapse">Close ✕</button></div>
+    <div class="votes-row">${chips}</div>
+    <h2 style="margin-top:18px">Speeches and statements · ${esc(S.windows[win])} (${d.speeches.length})</h2>
+    ${items || `<div class="muted">${m.speeches_tracked ? "None found." : "Speeches are not collected for this member."}</div>`}
+  </div>`;
+  $("#closeDetail").onclick = () => {
+    const card = document.querySelector(`.card[data-id="${id}"]`);
+    closeMember();
+    if (card) card.scrollIntoView({behavior: "smooth", block: "nearest"});
+  };
+  document.querySelectorAll("#detail details").forEach(det => det.addEventListener("toggle", async () => {
+    const box = $(".fulltext", det);
+    if (!det.open || box.dataset.loaded) return;
+    const s = await (await fetch("/api/speech?url=" + encodeURIComponent(det.dataset.url))).json();
+    box.textContent = s.text || "(empty)";
+    box.dataset.loaded = 1;
+  }));
+  if (scroll) $("#detail").scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+$("#copyall").onclick = async () => {
+  const btn = $("#copyall"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Copying…";
+  try {
+    const text = await (await fetch("/api/export?window=" + win)).text();
+    try { await navigator.clipboard.writeText(text); }
+    catch {  // clipboard API unavailable: fall back to a hidden textarea
+      const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    const n = (text.match(/^={78}$/gm) || []).length;
+    btn.textContent = `Copied ${n} items (${Math.round(text.length / 1000)}k chars)`;
+  } catch (e) { btn.textContent = "Copy failed"; console.error(e); }
+  setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 2500);
+};
+
+$("#logbtn").onclick = () => { const l = $("#logwrap"); l.style.display = l.style.display === "block" ? "none" : "block"; };
+
+$("#load").onclick = async () => {
+  await fetch("/api/load?window=" + win, {method: "POST"});
+  poll();
+};
+
+async function poll() {
+  const btn = $("#load"), log = $("#log"), t = $("#timer");
+  btn.disabled = true; btn.textContent = "Loading…";
+  $("#logwrap").style.display = "block";
+  const st = await (await fetch("/api/load")).json();
+  log.textContent = st.log.join("\n");
+  log.scrollTop = log.scrollHeight;
+  if (st.running) {
+    if (!tick) {
+      const base = Date.now() - (st.elapsed || 0) * 1000;
+      tick = setInterval(() => { t.textContent = `⏱ ${fmtDuration((Date.now() - base) / 1000)} · loading ${WIN_LABEL[st.window] || ""}`; }, 250);
+    }
+    t.className = "running";
+    return setTimeout(poll, 1000);
+  }
+  clearInterval(tick); tick = null;
+  btn.disabled = false; btn.textContent = "Load";
+  await refresh();
+}
+
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(tab) {
+  store.set("tab", tab);
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll("[data-for]").forEach(el => el.hidden = el.dataset.for !== tab);
+  document.querySelectorAll("main > section").forEach(el => el.hidden = el.dataset.tab !== tab);
+  if (tab === "analysis") window.Analysis?.show();
+}
+showTab(store.get("tab") || "data");
+
+refresh().then(async () => {
+  const st = await (await fetch("/api/load")).json();
+  if (st.running) poll();
+  else $("#log").textContent = st.log.join("\n");  // last saved load log
+});
+</script>
+<script src="/static/macro.js"></script>
+<script src="/static/analysis.js"></script>
+<script>if (store.get("tab") === "analysis") Analysis.show();</script>
+</body>
+</html>

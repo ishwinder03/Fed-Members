@@ -1,0 +1,71 @@
+# Refresh the board without the Mac: Load + Run analysis + rebuild view_for_work.html, commit it,
+# and optionally email it to work. Start it from the GitHub app: Actions > Refresh board > Run workflow.
+#
+# Secrets (repo Settings > Secrets and variables > Actions):
+#   GEMINI_API_KEY  required
+#   SMTP_PASSWORD   optional: a Gmail app password for ishusandhu8@gmail.com, needed to email from here
+name: Refresh board
+
+on:
+  workflow_dispatch:
+    inputs:
+      window:
+        description: Lookback window
+        type: choice
+        options: [6m, 3m, 1y, ytd]
+        default: 6m
+      email:
+        description: Email it to work as well
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-board
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # data/ (collected speeches, raw page cache, AI scores) carries over between runs, so later runs
+      # only fetch and score what is new. GitHub drops it after 7 days unused; the next run then rebuilds it.
+      - name: Restore data
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: board-data-${{ github.run_id }}
+          restore-keys: board-data-
+
+      - name: Load, analyse, snapshot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python3 refresh.py --window "${{ inputs.window }}" ${{ inputs.email && '--email' || '' }}
+
+      - name: Save data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: board-data-${{ github.run_id }}
+
+      - name: Commit view_for_work.html
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add view_for_work.html
+          git diff --cached --quiet && { echo "No change"; exit 0; }
+          git commit -m "Update view_for_work.html (board snapshot, ${{ inputs.window }}, $(date -u '+%d %b %Y %H:%M') UTC)"
+          git push

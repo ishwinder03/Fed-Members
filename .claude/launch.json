@@ -4,8 +4,25 @@
     {
       "name": "fomc-voters",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["server.py", "--no-browser", "--port", "8766"],
+      "runtimeArgs": [
+        "server.py",
+        "--no-browser",
+        "--port",
+        "8766"
+      ],
       "port": 8766
+    },
+    {
+      "name": "snapshot-view",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8767",
+        "--directory",
+        "data/exports"
+      ],
+      "port": 8767
     }
   ]
 }

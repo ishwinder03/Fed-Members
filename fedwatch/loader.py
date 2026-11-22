@@ -2,11 +2,11 @@
 import re
 import time
 import traceback
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from bs4 import BeautifulSoup
 
-from . import fomc, speeches, windows
+from . import fomc, macro, speeches, windows
 from .people import PEOPLE, person_id
 
 PRESIDENT_TITLE = "President, {inst}"
@@ -199,6 +199,31 @@ class Loader:
         self.log(f"    + {it['date']} {it['person_id']:<9} {kind:<9} {len(text):>6} chars  {title[:60]}")
 
     # ------------------------------------------------------------ run
+    def load_macro(self):
+        """Inflation (Cleveland Fed nowcast file) and the jobs report (BLS). Always refreshed: a later
+        Load picks up new releases and revisions. A failure here is reported but doesn't fail the Load."""
+        since = min(self.since, (self.today - timedelta(days=400)).isoformat())[:7]  # a year for trends
+        rows = []
+        try:
+            rows += macro.inflation(self.f.get_json(macro.NOWCAST_URL), since)
+        except Exception as e:
+            self.issue("macro", f"Cleveland Fed inflation nowcast: {e}")
+        try:
+            y = int(since[:4])
+            data = self.f.post_json(macro.BLS_URL, {"seriesid": list(macro.BLS_IDS), "startyear": str(y - 1),
+                                                     "endyear": str(self.today.year)})
+            if data.get("status") != "REQUEST_SUCCEEDED":
+                raise RuntimeError("; ".join(data.get("message") or []) or data.get("status"))
+            rows += macro.jobs(data, since)
+        except Exception as e:
+            self.issue("macro", f"BLS jobs data: {e}")
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO macro(series, period, actual, expected, expected_kind, release_date, fetched_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            [(r["series"], r["period"], r["actual"], r["expected"], r["expected_kind"], r["release_date"], now()) for r in rows])
+        self.conn.commit()
+        self.log(f"Economic data: {len(rows)} monthly figures (CPI, PCE, payrolls, unemployment, wages)")
+
     def run(self, log_lines=None):
         started, t0 = now(), time.monotonic()
         requests_before = self.f.requests_made
@@ -207,6 +232,7 @@ class Loader:
         try:
             self.load_fomc()
             self.load_speeches()
+            self.load_macro()
         except Exception:
             ok = False
             self.issue("load", traceback.format_exc().splitlines()[-1])

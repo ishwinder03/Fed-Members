@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS issues (
     message TEXT,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS macro (
+    series TEXT,                      -- cpi | core_cpi | pce | core_pce | payrolls | unemployment | wages
+    period TEXT,                      -- data month, YYYY-MM
+    actual REAL,
+    expected REAL,                    -- Cleveland Fed nowcast before release (inflation) or recent trend (jobs)
+    expected_kind TEXT,               -- nowcast | trend
+    release_date TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY (series, period)
+);
 CREATE TABLE IF NOT EXISTS loads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT,

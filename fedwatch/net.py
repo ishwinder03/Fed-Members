@@ -45,6 +45,19 @@ class Fetcher:
         path.write_text(text, encoding="utf-8")
         return text
 
+    def post_json(self, url: str, payload):
+        with self._lock:
+            wait = MIN_INTERVAL - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                resp = self.session.post(url, json=payload, timeout=60)
+            finally:
+                self._last = time.monotonic()
+                self.requests_made += 1
+        resp.raise_for_status()
+        return resp.json()
+
     def get_json(self, url: str):
         with self._lock:
             wait = MIN_INTERVAL - (time.monotonic() - self._last)

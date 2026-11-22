@@ -16,6 +16,35 @@ python3 -m analysis.run        # same as "Run analysis", headless (see Analysis 
 After changing any code or `analysis/config.toml`, restart `server.py`: a running server keeps the
 old code and settings in memory.
 
+## Theme and publishing
+
+- **Theme:** the switch in the header picks **HSBC colours** (default) or **Classic**, the original
+  look. A full copy of the classic page is kept in `static/themes/index_classic_backup.html`.
+- **Publish to GitHub:** builds a view-only copy of the whole board (both tabs, current window and
+  model, all data baked in, no Load / Run / Copy / Log buttons) as `view_for_work.html` at the repo
+  root. It commits **only that file** and pushes it to `origin` (github.com/ishwinder03/Fed-Members).
+  The repo is public, so anyone with the link can see the file. Open it at work by downloading it
+  from GitHub ("Download raw file") and opening it in a browser. The snapshot always uses the HSBC
+  colours, with no theme switch and no mention of the theme.
+- **Email to work:** the same file as an attachment to the work address (`EMAIL` in `snapshot.py`),
+  through the Mac's Mail app, or through Gmail's SMTP server if `SMTP_PASSWORD` (a Gmail app
+  password) is set in `.env` or the environment.
+- `GET /api/snapshot?window=1y` downloads the same file without publishing or emailing it.
+
+## Refreshing from your phone (GitHub Actions)
+
+`.github/workflows/refresh.yml` ("Refresh board") does Load, Run analysis and the snapshot on
+GitHub's machines, so the Mac can be shut: in the GitHub app open the repo, **Actions > Refresh
+board > Run workflow**, pick the window (and whether to email it). It commits the new
+`view_for_work.html` (and emails it when the `SMTP_PASSWORD` secret is set). The same steps run
+locally with `python3 refresh.py --window 6m [--email]`.
+
+- Secrets (repo Settings > Secrets and variables > Actions): `GEMINI_API_KEY` (required),
+  `SMTP_PASSWORD` (optional, a Gmail app password for ishusandhu8@gmail.com).
+- `data/` is kept between runs in the Actions cache, so later runs fetch and score only what is
+  new. GitHub drops the cache after 7 days unused; the next run rebuilds it (about 100 Flash-Lite calls).
+- It uses the default model (Flash-Lite, free tier); the paid models aren't available there.
+
 ## Votes & speeches tab
 
 The window picker sets both what a **Load** fetches (only items dated inside the window) and what
@@ -43,6 +72,20 @@ title, link) followed by the exact text.
   - Logan: `dallasfed.org/news/speeches/logan`
   - Kashkari: `minneapolisfed.org/people/neel-kashkari` (speeches and written essays)
 
+### Economic data
+
+Every Load also refreshes the monthly data the FOMC reacts to (table `macro`), shown as charts of
+actual vs expected:
+
+- **CPI, core CPI, PCE and core PCE** come from the Cleveland Fed's inflation-nowcasting file. It
+  gives each month's actual figure and its release date. "Expected" is the nowcast just before
+  release.
+- **Payrolls, unemployment and hourly earnings** come from the BLS public API (no key needed).
+  There's no free consensus forecast, so "expected" is the 3-month trend (for unemployment, the
+  previous month). These figures are as revised today, and release dates follow the BLS rule.
+
+Bars are coloured by surprise: hotter or stronger than expected = hawkish, cooler or weaker = dovish.
+
 Items are tagged:
 
 - `speech`
@@ -57,7 +100,7 @@ Speech URLs already stored are skipped, so later Loads only fetch new items.
 
 ## Analysis tab
 
-Press **Run analysis** after a Load. Under the gauge, a collapsed **How the score is worked out**
+Press **Run analysis** after a Load. Under the implied move, a collapsed **How the score is worked out**
 box explains the method in brief, with the current weights from the config. The tab is separate from Load. It only *reads* `data/fed.db`
 and keeps its own results in `data/analysis.db`.
 
@@ -68,12 +111,17 @@ and keeps its own results in `data/analysis.db`.
 - Every setting lives in `analysis/config.toml`: provider, default model and model-picker list,
   per-model daily call caps, prompt versions, source weights, vote scores, recency weights and the
   prefilter keywords.
-- Default model: `gemini-3.5-flash-lite` (cap 500 calls/day). Other models are in the picker:
-  - `gemini-3.5-flash` (cap 20)
-  - `gemini-3.8-flash` (cap 20)
-  - `gemini-4-hydrogen` (cap 0, blocked until paid credits are approved)
-  - `gemini-4-neon` (cap 0, blocked until paid credits are approved)
+- Default model: `gemini-3.5-flash-lite` (500 free calls/day). Other models are in the picker:
+  - `gemini-3.5-flash` (20 free)
+  - `gemini-3.8-flash` (20 free)
+  - `gemini-4-hydrogen` (paid only)
+  - `gemini-4-neon` (paid only)
 - Each model keeps its own scores and readings.
+- **Paid password.** Paid-only models (Hydrogen, Neon), or a free model whose free calls for the day
+  are used up, need the paid password before **Run analysis** starts. The dialog shows the hint.
+  An unlocked run is still capped at 150 calls per model per day (`[paid] daily_cap`). Only a
+  SHA-256 hash of the password is stored, in `[paid]` in `config.toml`. On the command line, add
+  `--paid` to be asked for it.
 - All AI calls go through `analysis/providers/` (`get()` → `generate_json`). To switch to Claude,
   fill in `providers/claude.py` and set `provider = "claude"`.
 
@@ -105,25 +153,40 @@ and keeps its own results in `data/analysis.db`.
      the two windows before it, at recency weights 1.0 / 0.5 / 0.25. A document's weight is
      source × relevance × confidence × recency. Agreeing votes count at 0.3.
    - **Carry-over**: a member silent through all three windows has their older score carried over.
-   - **Fed gauge** = average stance of the 12 voters, rescaled from −5…+5 to 0–100% (50% =
-     comfortable holding). The reading also gives the change in points vs the previous window, the hike/hold/cut **tally**, the **spread** (std dev of stances) and a
-     **6-month path**.
-6. **Summary (AI).** A 4-sentence read of the final numbers (`prompts/summary_v2.md`). It explains
+   - **Implied move**, Bloomberg WIRP-style: hike probability − cut probability, as a share of a
+     25bp move. +100% = a 25bp hike fully expected, 0 = hold, −100% = a 25bp cut. The
+     probabilities are the expected decision described below.
+   - The reading also gives how the members line up (own views, plus those with no current view),
+     the **spread** (std dev of stances) and a **meeting-by-meeting path**. The path shows the
+     implied move going into each meeting next to what actually happened.
+6. **Summary (AI).** A short read of the final numbers (`prompts/summary_v3.md`). It explains
    the numbers and never changes them.
+
+**Data-dependent statements.** The scoring prompt (`score_v3.md`) also captures conditions such as
+"if the August data show the improvement was fleeting, it may be appropriate to raise the rate in
+September": the indicator, direction, any threshold, the data month and the action. Each run checks
+them against the released data. A condition that names a month is judged on that month. Otherwise
+it's judged on the latest release, against the threshold or what was expected. A met condition sets
+that member's call. A condition on an indicator the data doesn't cover gets one small AI check.
+
+**Expected decision.** This is the average hike / hold / cut odds of the members with a current view:
+a recent policy speech, a resolved condition, or a rate dissent at the last meeting. Members with no
+current view are assumed to vote with the committee, as members almost always do.
 
 A member's call for the next meeting comes from their latest policy document. These cases default
 to hold, or follow the dissent, and are labelled in the table:
 
 | Situation | Call | Label |
 |---|---|---|
-| No call | hold | "no call" |
-| Call from before the latest decision | hold | "out of date" |
+| Data condition resolved by released data | the stated action | "condition met" / "not met" |
+| No current view (no call, or from before the latest decision) | the expected decision | "follows committee" |
 | Tie | hold | — |
 | Rate dissent at the latest decision, nothing newer | the dissent's direction | "from dissent" |
 
-**Snapshot.** When Run analysis is pressed on or after the blackout start (the second Saturday
-before the meeting), the reading is also saved as "going into the meeting". Nothing runs on a
-schedule, so press it once during the blackout.
+**Snapshot.** Members stop speaking at the blackout, but data keeps coming out. Any run between the
+blackout start and the meeting is also saved as "going into the meeting", and the latest such run
+is the one kept. The path chart rebuilds every past meeting as of the day before it: speeches up to
+the blackout, data up to that day.
 
 **Daily caps.** A run stops cleanly at a model's daily cap, and the next run carries on where it
 left off. Caps reset at midnight Pacific (08:00 UK).
@@ -131,7 +194,7 @@ left off. Caps reset at midnight Pacific (08:00 UK).
 ### Command line
 
 ```
-python3 -m analysis.run [--model M] [--as-of YYYY-MM-DD] [--limit N] [--no-summary]
+python3 -m analysis.run [--model M] [--as-of YYYY-MM-DD] [--limit N] [--no-summary] [--paid]
 python3 -m analysis.checks score URL ...          # score documents and print the full JSON
 python3 -m analysis.checks consistency URL ...    # score each 3 more times, report the spread
 ```
@@ -139,11 +202,15 @@ python3 -m analysis.checks consistency URL ...    # score each 3 more times, rep
 `--as-of` rebuilds a past reading (a backtest). For example, `--as-of 2026-10-16` gives the reading
 going into the 27–28 Oct 2026 meeting.
 
-### Test results so far (Oct 2026 meeting: 10–2 hold, Cook and Hammack dissented for a hike)
+### Test results so far (Flash-Lite, prompt v3)
 
 - **Consistency:** repeat scores varied by 0–0.5 points (target: within 1).
-- **Backtest of the member calls:** Hydrogen got 9/12, including both dissenters. Flash-Lite got
-  6/12 and missed both, so treat its tally as rough. Its stances and gauge are close to Hydrogen's.
+- **Backtest, Jun–Oct 2026, as of the day before each meeting:**
+  - The expected decision was right at all 4 meetings, including the unanimous September hike
+    (75% hike).
+  - Member calls were 40 of 47 right.
+  - October was a near coin-flip (49% hold).
+  - The rules were designed with these meetings in view, so treat this as encouraging, not proven.
 
 ### Methodology for other tools
 

@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS runs (
     ok INTEGER,
     log TEXT
 );
+CREATE TABLE IF NOT EXISTS condition_ai (  -- AI fallback verdicts for conditions on indicators not in the data
+    key TEXT PRIMARY KEY, result_json TEXT, created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER,
@@ -81,12 +84,21 @@ def pacific_day():
     return datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
 
 
+MIGRATIONS = {"scores": {"conditions_json": "TEXT"}}  # columns added after the first version
+
+
 def connect():
     ANALYSIS_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(ANALYSIS_DB, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    for table, cols in MIGRATIONS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, typ in cols.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    conn.commit()
     return conn
 
 

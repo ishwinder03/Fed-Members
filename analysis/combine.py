@@ -1,7 +1,8 @@
 """Step 5 (plain code): member stances, Fed gauge, tally, spread, carry-over and the 6-month path."""
 import json
+import re
 import statistics
-from datetime import date
+from datetime import date, timedelta
 
 from analysis import documents
 from analysis.settings import CONFIG, score_models
@@ -34,7 +35,7 @@ def _scored(conn, fed, model, people, since, until):
                  mandate_balance=r["mandate_balance"], mandate_reason=r["mandate_reason"],
                  sub_views=json.loads(r["sub_views_json"] or "null"), evidence=json.loads(r["evidence_json"] or "[]"),
                  summary=r["summary"], prefiltered=bool(r["prefiltered"]), notes=r["validation_notes"],
-                 model=r["model"])
+                 model=r["model"], conditions=json.loads(r["conditions_json"] or "[]"))
         d["weight"] = sw[d["doc_type"]] * r["policy_relevance"] * r["confidence"]
         docs.append(d)
     return sorted(docs, key=lambda d: (d["date"], d["doc_id"]))
@@ -58,7 +59,8 @@ def call_label(call, latest_decision):
     if call is None:
         return "hold", None, "no call: no policy document, so assumed hold"
     if call["date"] < latest_decision:
-        return "hold", None, f"out of date: last call ({call['date']}) predates the {latest_decision} decision, so assumed hold"
+        return "hold", None, (f"out of date: no policy speech since the {latest_decision} decision; last one was "
+                              f"{call['date']}, so assumed hold")
     label = max(("hold", "hike", "cut"), key=call.get)  # ties go to hold (listed first)
     return label, call[label], None
 
@@ -102,11 +104,43 @@ def member_window(conn, fed, model, pid, dates, i, until, depth=0):
     return res
 
 
-def reading(conn, fed, model, as_of):
-    """All numbers for the window ending at `as_of` (no AI)."""
+def next_meeting(as_of):
+    from analysis import context
+    return next((b.isoformat() for a, b in context.scheduled_meetings() if b.isoformat() > as_of), None)
+
+
+def apply_conditions(conn, fed, docs, as_of, latest_decision, upcoming, provider=None):
+    """The newest data-dependent statement this member made for the upcoming meeting, resolved against
+    the data released since. Returns (label, probability, note, detail) or None."""
+    from analysis import conditions as C
+    for d in reversed(docs):
+        for cond in reversed(d.get("conditions") or []):
+            meeting = (cond.get("meeting") or "")[:10]
+            if meeting and meeting != upcoming:
+                continue
+            if not meeting and d["date"] < latest_decision:
+                continue  # an open-ended condition from before the last decision has been overtaken
+            res = C.resolve(fed, cond, d["date"], as_of)
+            if res["status"] == "ai":
+                res = C.resolve_with_ai(conn, fed, provider, cond, d["date"], as_of)
+            info = {"quote": cond["quote"], "date": d["date"], "url": d.get("url"), "status": res["status"],
+                    "detail": res["detail"], "then": cond["then"], "otherwise": cond.get("otherwise")}
+            if res["status"] == "met":
+                return cond["then"], CONFIG["conditions"]["met_probability"], "condition met", info
+            if res["status"] == "not_met" and cond.get("otherwise"):
+                return cond["otherwise"], CONFIG["conditions"]["met_probability"], "condition not met", info
+            if res["status"] == "pending":
+                return None, None, "condition pending", info
+    return None
+
+
+def reading(conn, fed, model, as_of, provider=None):
+    """All numbers for the window ending at `as_of` (no AI, except the condition fallback when a
+    provider is passed)."""
     dates = decision_dates(fed, as_of)
     i = len(dates) - 1
     people = documents.voters(fed, as_of)
+    upcoming = next_meeting(as_of)
     members, pending = [], 0
     for pid in people:
         cur = member_window(conn, fed, model, pid, dates, i, as_of)
@@ -127,21 +161,57 @@ def reading(conn, fed, model, as_of):
             # no current call, but they dissented on the rate at the latest decision: that preference stands
             label = "hike" if dissent["stance"] > 0 else "cut"
             note = f"from their dissent at the {dates[i]} decision (no policy speech since)"
+        condition = None
+        cr = apply_conditions(conn, fed, cur["docs"], as_of, dates[i], upcoming, provider)
+        if cr:
+            c_label, c_prob, c_note, condition = cr
+            if c_label:  # resolved by the data: overrides the speech-based call
+                label, prob, note = c_label, c_prob, f"{c_note}: {condition['detail']}"
+        basis = ("condition" if condition and condition["status"] in ("met", "not_met") else
+                 "speech" if prob is not None else "dissent" if note and note.startswith("from their dissent") else None)
         members.append({
             "id": pid, "name": display_name(pid),
             "stance": cur["stance"], "prev_stance": prev["stance"],
             "change": None if cur["stance"] is None or prev["stance"] is None else cur["stance"] - prev["stance"],
             "carried_over": cur["carried_over"], "carried_from": cur.get("carried_from"),
             "silent_now": cur["silent_now"], "n_earlier": len(earlier),
-            "call": call, "call_label": label, "call_prob": prob, "call_note": note,
+            "n_policy": sum(not d.get("pending") and d["policy_relevance"] >= MIN_RELEVANCE_FOR_CALL for d in texts),
+            "call": call, "call_label": label, "call_prob": prob, "call_note": note, "call_basis": basis,
+            "condition": condition,
             "n_docs": len(texts), "n_scored": sum(d["weight"] > 0 for d in texts if not d.get("pending")),
             "pending": sum(bool(d.get("pending")) for d in texts), "latest_quote": latest_quote,
         })
+    # committee view: average the hike/hold/cut odds of members with a current view (a recent policy
+    # speech, a resolved condition, or a rate dissent at the last meeting); members without one are
+    # assumed to vote with the committee, as members almost always do
+    views = []
+    for m in members:
+        if m["call_basis"] == "speech" and m["call_note"] is None:
+            views.append({k: m["call"][k] for k in ("hike", "hold", "cut")})
+        elif m["call_basis"] in ("condition", "dissent", "speech"):
+            p = m["call_prob"] if m["call_prob"] is not None else 1.0
+            views.append({k: p if k == m["call_label"] else (1 - p) / 2 for k in ("hike", "hold", "cut")})
+    committee = {k: sum(v[k] for v in views) / len(views) for k in ("hike", "hold", "cut")} if views else None
+    predicted = max(("hold", "hike", "cut"), key=committee.get) if committee else "hold"
+    for m in members:
+        if m["call_basis"] is None:
+            m.update(call_label=predicted, call_basis="committee",
+                     call_note=f"follows the committee ({predicted}): no current view of their own")
+    # each member on the headline's scale: their own hike odds minus cut odds (+100% = sure to back a 25bp hike)
+    for m in members:
+        if m["call_basis"] == "committee":
+            m["implied"] = committee and (committee["hike"] - committee["cut"]) * 100
+        elif m["call_basis"] == "speech" and m["call_note"] is None:
+            m["implied"] = (m["call"]["hike"] - m["call"]["cut"]) * 100
+        else:
+            p = m["call_prob"] if m["call_prob"] is not None else 1.0
+            m["implied"] = {"hike": p, "cut": -p}.get(m["call_label"], 0) * 100
     stances = [m["stance"] for m in members if m["stance"] is not None]
     prev_stances = [m["prev_stance"] for m in members if m["prev_stance"] is not None]
     gauge = statistics.mean(stances) + 5 if stances else None
     gauge_prev = statistics.mean(prev_stances) + 5 if prev_stances else None
     tally = {k: sum(m["call_label"] == k for m in members) for k in ("hike", "hold", "cut")}
+    tally_own = {k: sum(m["call_label"] == k for m in members if m["call_basis"] != "committee") for k in ("hike", "hold", "cut")}
     tally["none"] = sum(m["call_label"] is None for m in members)
     return {
         "as_of": as_of, "window_start": dates[i], "window_end": as_of,
@@ -149,28 +219,93 @@ def reading(conn, fed, model, as_of):
         "gauge": gauge, "gauge_prev": gauge_prev,
         "gauge_change": None if gauge is None or gauge_prev is None else gauge - gauge_prev,
         "spread": statistics.pstdev(stances) if len(stances) > 1 else None,
-        "tally": tally, "members": members, "missing_stance": [m["id"] for m in members if m["stance"] is None],
+        "tally": tally, "tally_own": tally_own, "members": members,
+        "committee": committee and {**committee, "predicted": predicted, "n_views": len(views),
+                                    # Bloomberg-style: +100% = a 25bp hike fully expected, -100% = a 25bp cut
+                                    "implied": (committee["hike"] - committee["cut"]) * 100},
+        "implied": committee and (committee["hike"] - committee["cut"]) * 100,
+        "no_view": sum(m["call_basis"] == "committee" for m in members),
+        "next_meeting": upcoming, "missing_stance": [m["id"] for m in members if m["stance"] is None],
         "pending_docs": pending,
     }
 
 
-def path(conn, fed, model, as_of):
-    """Month-by-month stance per member and for the Fed over the last path_months, using all documents."""
-    people = documents.voters(fed, as_of)
+def path_meetings(fed, as_of):
+    """Meetings in the path range: [(first_day, last_day, snapshot_as_of)], where the snapshot is the day
+    before the meeting: speeches stop at the blackout, but data released during it counts. Oldest first."""
+    from analysis import context  # late import: context fetches the calendar page
     end = date.fromisoformat(as_of)
-    months = []
-    y, m = end.year, end.month
-    for _ in range(CONFIG["combine"]["path_months"]):
-        months.append((y, m))
-        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    y, m = end.year, end.month - (CONFIG["combine"]["path_months"] - 1)
+    while m < 1:
+        y, m = y - 1, m + 12
+    start = date(y, m, 1)
+    decided = set(decision_dates(fed, as_of))
+    out = []
+    for first, last in context.scheduled_meetings():
+        snap = first - timedelta(days=1)
+        if start <= last <= end and last.isoformat() in decided:
+            out.append((first, last, snap.isoformat()))
+    return out
+
+
+def actual_votes(fed, meeting_date):
+    """{person: 'hike'|'hold'|'cut'} as each member actually voted (a dissent = what they preferred)."""
+    m = fed.execute("SELECT decision FROM meetings WHERE date=?", (meeting_date,)).fetchone()
+    out = {}
+    for v in fed.execute("SELECT * FROM votes WHERE meeting_date=?", (meeting_date,)):
+        t = (v["dissent_text"] or "").lower()
+        out[v["person_id"]] = ("hike" if "raise" in t else "cut" if "lower" in t else
+                               "hold" if re.search(r"no change|maintain", t) and v["vote"] == "against" and
+                               m["decision"] != "hold" else m["decision"])
+    return out
+
+
+def path(conn, fed, model, as_of, live=None, provider=None):
+    """Meeting by meeting: for each past meeting, the reading the app would have shown just before its
+    blackout (rebuilt from stored scores), next to what actually happened; then the upcoming meeting,
+    taken from the live reading `live`, so it only changes when the analysis is re-run."""
     rows = []
-    for y, m in reversed(months):
-        start = date(y, m, 1).isoformat()
-        stop = min(date(y + (m == 12), m % 12 + 1, 1).toordinal() - 1, end.toordinal())
-        docs = _scored(conn, fed, model, people, start, date.fromordinal(stop).isoformat())
-        per = {pid: _stance([d for d in docs if d["person_id"] == pid]) for pid in people}
-        vals = [v for v in per.values() if v is not None]
-        rows.append({"month": f"{y}-{m:02d}", "members": per, "n_members": len(vals),
-                     "fed_stance": statistics.mean(vals) if vals else None,
-                     "gauge": statistics.mean(vals) + 5 if vals else None})
+    for first, last, snap in path_meetings(fed, as_of):
+        r = reading(conn, fed, model, snap, provider)
+        md = last.isoformat()
+        m = fed.execute("SELECT * FROM meetings WHERE date=?", (md,)).fetchone()
+        acts = actual_votes(fed, md)
+        right = [x["id"] for x in r["members"] if x["id"] in acts and x["call_label"] == acts[x["id"]]]
+        dissents = [(display_name(p), a) for p, a in acts.items() if a != m["decision"]]
+        rows.append({
+            "meeting_start": first.isoformat(), "meeting": md, "as_of": snap, "upcoming": False,
+            "gauge": r["gauge"], "fed_stance": None if r["gauge"] is None else r["gauge"] - 5,
+            "tally": r["tally"], "spread": r["spread"], "pending": r["pending_docs"], "committee": r["committee"],
+            "members": {x["id"]: x["stance"] for x in r["members"]},
+            "member_implied": {x["id"]: x.get("implied") for x in r["members"]},
+            "calls": {x["id"]: x["call_label"] for x in r["members"]},
+            "implied": r["implied"],
+            "actual": {"decision": m["decision"], "bps": m["decision_bps"],
+                       "implied": (1 if m["decision"] == "hike" else -1 if m["decision"] == "cut" else 0)
+                                  * (m["decision_bps"] or 0) / 25 * 100,
+                       "for": sum(a == m["decision"] for a in acts.values()), "against": len(dissents),
+                       "dissents": dissents, "votes": acts},
+            "calls_right": len(right), "calls_compared": sum(x["id"] in acts for x in r["members"]),
+        })
+    if live is not None:
+        ctx = live.get("context") or {}
+        rows.append({
+            "meeting_start": ctx.get("next_meeting_start"), "meeting": ctx.get("next_meeting"), "as_of": live["as_of"],
+            "upcoming": True, "implied": live.get("implied"), "gauge": live["gauge"], "fed_stance": None if live["gauge"] is None else live["gauge"] - 5,
+            "tally": live["tally"], "spread": live["spread"], "pending": live["pending_docs"],
+            "committee": live.get("committee"),
+            "members": {x["id"]: x["stance"] for x in live["members"]},
+            "member_implied": {x["id"]: x.get("implied") for x in live["members"]},
+            "calls": {x["id"]: x["call_label"] for x in live["members"]},
+        })
     return rows
+
+
+def path_docs(fed, as_of):
+    """(people, since, until) spans whose documents the meeting path needs scored."""
+    back = len(CONFIG["combine"]["window_decay"]) + 1
+    spans = []
+    for _, _, snap in path_meetings(fed, as_of):
+        dates = decision_dates(fed, snap)
+        spans.append((documents.voters(fed, snap), dates[max(0, len(dates) - back)], snap))
+    return spans

@@ -17,10 +17,14 @@ def facts(r, ctx):
     return {
         "policy_context": ctx["text"],
         "window": f"{r['window_start']} to {r['window_end']}",
-        "gauge_percent": pc(r["gauge"]), "gauge_previous_window_percent": pc(r["gauge_prev"]),
-        "gauge_change_points": None if r["gauge_change"] is None else round(r["gauge_change"] * 10),
+        "implied_move_percent": None if r.get("implied") is None else f"{r['implied']:+.0f}%",
+        "probabilities": r.get("committee") and {k: f"{int(r['committee'][k] * 100 + 0.5)}%" for k in ("hike", "hold", "cut")},  # rounds like the page
+        "members_with_a_current_view": r.get("committee") and r["committee"]["n_views"],
+        "members_without_a_current_view": r.get("no_view"),
         "spread_std_dev": f(r["spread"]),
-        "next_meeting_tally": {k: v for k, v in r["tally"].items() if v},
+        "own_view_tally": {k: v for k, v in (r.get("tally_own") or r["tally"]).items() if v},
+        "calling_for_a_hike": [m["name"] for m in r["members"] if m["call_label"] == "hike" and m.get("call_basis") != "committee"],
+        "calling_for_a_cut": [m["name"] for m in r["members"] if m["call_label"] == "cut" and m.get("call_basis") != "committee"],
         "members": [{
             "name": m["name"], "stance": f(m["stance"]), "previous_window_stance": f(m["prev_stance"]),
             "change": f(m["change"]), "carried_over": m["carried_over"],

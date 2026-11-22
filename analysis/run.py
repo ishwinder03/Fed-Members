@@ -1,4 +1,4 @@
-"""Analyse:  python3 -m analysis.run [--model M] [--as-of YYYY-MM-DD] [--limit N] [--no-summary]
+"""Analyse:  python3 -m analysis.run [--model M] [--as-of YYYY-MM-DD] [--limit N] [--no-summary] [--paid]
 
 Scores every unscored document (newest window first), stopping cleanly at the free-tier daily
 limit; the next run carries on. Then rebuilds the reading (no AI) and asks for a short summary.
@@ -25,7 +25,10 @@ def docs_to_score(fed, as_of):
     dates = combine.decision_dates(fed, as_of)
     back = len(CONFIG["combine"]["window_decay"]) + 1   # lookback windows, plus one for "change vs previous"
     since = min(date(y, m, 1).isoformat(), dates[max(0, len(dates) - back)])
-    docs = documents.texts(fed, people, since, as_of)
+    docs = {d["doc_id"]: d for d in documents.texts(fed, people, since, as_of)}
+    for p, s, u in combine.path_docs(fed, as_of):  # what each past meeting's pre-blackout reading needs
+        docs.update({d["doc_id"]: d for d in documents.texts(fed, p, s, u) if d["doc_id"] not in docs})
+    docs = list(docs.values())
     rank = lambda d: (0 if d["date"] >= dates[-1] else 1 if len(dates) > 1 and d["date"] >= dates[-2] else 2)
     docs.sort(key=lambda d: d["date"], reverse=True)
     return sorted(docs, key=rank)  # stable: newest first within each group
@@ -53,9 +56,9 @@ def fallback(conn, provider, log):
 
 def build_reading(conn, fed, model, provider, run_id, as_of, label, want_summary, log):
     """`model` names the reading; `provider` (maybe the fallback) makes the summary call."""
-    r = combine.reading(conn, fed, model, as_of)
-    p = combine.path(conn, fed, model, as_of)
+    r = combine.reading(conn, fed, model, as_of, provider)
     ctx = context.as_of(fed, as_of)
+    p = combine.path(conn, fed, model, as_of, live={**r, "context": ctx}, provider=provider)
     facts = summarise.facts(r, ctx)
     skey = summarise.key(facts, model)
     old = conn.execute("SELECT summary_text FROM readings WHERE summary_key=? AND summary_text IS NOT NULL "
@@ -127,11 +130,13 @@ def run(model=None, as_of=None, label=None, limit=None, want_summary=True, log=p
     r = build_reading(conn, fed, model, provider, run_id, as_of, label, want_summary and not stopped, log)
     if live:
         ctx = context.as_of(fed, as_of)
-        if ctx["blackout_start"] and as_of >= ctx["blackout_start"]:
-            build_reading(conn, fed, model, provider, run_id, ctx["blackout_start"], "going into the meeting", False, log)
-            log(f"Snapshot saved: going into the {ctx['next_meeting']} meeting")
+        if ctx["blackout_start"] and ctx["blackout_start"] <= as_of < ctx["next_meeting_start"]:
+            # in the blackout: no more speeches, but data still comes out; the latest run before the
+            # meeting is kept as the "going into the meeting" reading
+            build_reading(conn, fed, model, provider, run_id, as_of, "going into the meeting", False, log)
+            log(f"Snapshot saved: going into the {ctx['next_meeting']} meeting (as of {as_of})")
     g = r["gauge"]
-    log(f"Gauge {g * 10:.0f}%" if g is not None else "Gauge: not enough scored documents yet")
+    log(f"Implied move {r['implied']:+.0f}% (hike {r['committee']['hike']:.0%}, cut {r['committee']['cut']:.0%})" if r.get("implied") is not None else "Gauge: not enough scored documents yet")
     calls = conn.execute("SELECT COUNT(*) FROM ai_calls WHERE run_id=?", (run_id,)).fetchone()[0]
     dur = time.time() - t0
     log(f"Done in {dur:.0f}s: {scored} scored, {skipped} skipped by prefilter, {failures} failed, "
@@ -146,5 +151,12 @@ def run(model=None, as_of=None, label=None, limit=None, want_summary=True, log=p
 if __name__ == "__main__":
     a = sys.argv[1:]
     opt = lambda k: a[a.index(k) + 1] if k in a else None
-    run(model=opt("--model"), as_of=opt("--as-of"), limit=int(opt("--limit")) if opt("--limit") else None,
+    model = opt("--model") or CONFIG["model"]
+    if "--paid" in a:  # spend past the free limit, or use a paid-only model: needs the paid password
+        import getpass
+        from analysis.settings import PAID_UNLOCKED, password_ok
+        if not password_ok(getpass.getpass(f"Paid password (hint: {CONFIG['paid']['hint']}): ")):
+            sys.exit("Wrong password.")
+        PAID_UNLOCKED.add(model)
+    run(model=model, as_of=opt("--as-of"), limit=int(opt("--limit")) if opt("--limit") else None,
         want_summary="--no-summary" not in a)

@@ -21,6 +21,28 @@
       --hawk: #e5584f; --dove: #5b93ee; --mid: #383835;
     }
   }
+  /* HSBC theme: red / black / white / greys. "Classic" (the original look) is the block above;
+     pick either with the Theme switch in the header. A full copy of the classic page is in
+     static/themes/index_classic_backup.html. */
+  :root[data-skin="hsbc"] {
+    --bg: #f3f3f3; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b6b; --line: #d7d8d6;
+    --accent: #db0011; --accent-soft: #fbe5e7; --dissent: #a8000b; --dissent-soft: #fbe5e7;
+    --warn: #8a5a00; --warn-soft: #fff4dc; --ok: #1e7a46;
+    --hike: #db0011; --cut: #3e505b; --hold: #6b6b6b;
+    --hawk: #db0011; --dove: #3e6c8a; --mid: #ececec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root[data-skin="hsbc"] {
+      --bg: #161616; --panel: #222222; --ink: #f2f2f2; --muted: #a3a3a3; --line: #363636;
+      --accent: #ff3347; --accent-soft: #3a1518; --dissent: #ff5c69; --dissent-soft: #3a1518;
+      --warn: #f5c26b; --warn-soft: #3a2f17; --ok: #5fcf8f;
+      --hike: #ff3347; --cut: #8fb4cc; --hold: #a3a3a3;
+      --hawk: #e0303f; --dove: #5f8fb0; --mid: #3a3a3a;
+    }
+  }
+  :root[data-skin="hsbc"] header { border-bottom: 3px solid var(--accent); }
+  :root[data-skin="hsbc"] button.primary { border-radius: 0; }
+  :root[data-skin="hsbc"] .panel, :root[data-skin="hsbc"] .card, :root[data-skin="hsbc"] .mchart { border-radius: 2px; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -104,6 +126,9 @@
 <body>
 <header>
   <h1>FOMC voters</h1>
+  <select id="skin" title="Colour theme" class="ctl-skin"><option value="hsbc">HSBC colours</option><option value="classic">Classic</option></select>
+  <button id="publishbtn" title="Save a view-only copy of the board as view_for_work.html and push it to the GitHub repo">Publish to GitHub</button>
+  <button id="emailbtn" title="Email a view-only copy of the board to your work address">Email to work</button>
   <div class="seg" id="tabs"><button data-tab="data" class="on">Votes &amp; speeches</button><button data-tab="analysis">Analysis</button></div>
   <span class="ctl" data-for="data">
     <div class="seg" id="windows"></div>
@@ -140,6 +165,10 @@ const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
+// colour theme: HSBC by default, "classic" = the original look
+function setSkin(s) { document.documentElement.dataset.skin = s; store.set("skin", s); $("#skin").value = s; }
+setSkin(store.get("skin") || "hsbc");
+$("#skin").onchange = e => setSkin(e.target.value);
 let S = null, selected = null, win = store.get("window") || "1y", tick = null;
 
 function fmtDuration(s) {
@@ -243,6 +272,8 @@ function render() {
     <div id="detail"></div>
     <h2>Voting history</h2>
     <div class="gridwrap">${grid()}</div>
+    <h2>Economic data <span class="sub">· actual vs expected, by month of data</span></h2>
+    ${window.Macro ? Macro.section(S) : ""}
     <h2>Not collected / needs attention</h2>
     <div class="panel">${gaps()}</div>`;
   document.querySelectorAll(".card").forEach(b => b.onclick = () => {
@@ -360,6 +391,32 @@ $("#copyall").onclick = async () => {
   setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 2500);
 };
 
+$("#publishbtn").onclick = async () => {
+  const model = store.get("model") || "";
+  if (!confirm(`Publish a view-only copy of the board (${WIN_LABEL[win]} window) as view_for_work.html to the GitHub repo?\n\nThe repo is public: anyone with the link can see it. Only this one file is committed and pushed.`)) return;
+  const btn = $("#publishbtn"); btn.disabled = true; btn.textContent = "Publishing…";
+  try {
+    const r = await (await fetch(`/api/publish?window=${win}&model=${encodeURIComponent(model)}`, {method: "POST"})).json();
+    if (r.ok && r.unchanged) alert("view_for_work.html is already up to date on GitHub.");
+    else if (r.ok) alert(`Published (commit ${r.commit}).\n${r.url}`);
+    else alert(`Publishing failed: ${r.error}`);
+  } catch (e) { alert("Publishing failed: " + e.message); }
+  btn.disabled = false; btn.textContent = "Publish to GitHub";
+};
+
+$("#emailbtn").onclick = async () => {
+  const model = store.get("model") || "";
+  if (!confirm(`Email a view-only copy of the board (${WIN_LABEL[win]} window) to your work address?`)) return;
+  const btn = $("#emailbtn"); btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    const r = await (await fetch(`/api/email?window=${win}&model=${encodeURIComponent(model)}`, {method: "POST"})).json();
+    if (r.ok) alert(`Sent to ${r.to} from ${r.sender}.\nAttachment: ${r.file}`);
+    else if (confirm(`Couldn't send: ${r.error}\n\nDownload the file instead to send yourself?`))
+      location.href = `/api/snapshot?window=${win}&model=${encodeURIComponent(model)}`;
+  } catch (e) { alert("Sending failed: " + e.message); }
+  btn.disabled = false; btn.textContent = "Email to work";
+};
+
 $("#logbtn").onclick = () => { const l = $("#logwrap"); l.style.display = l.style.display === "block" ? "none" : "block"; };
 
 $("#load").onclick = async () => {
@@ -403,6 +460,7 @@ refresh().then(async () => {
   else $("#log").textContent = st.log.join("\n");  // last saved load log
 });
 </script>
+<script src="/static/macro.js"></script>
 <script src="/static/analysis.js"></script>
 <script>if (store.get("tab") === "analysis") Analysis.show();</script>
 </body>

@@ -1,5 +1,5 @@
 SKILL: FOMC HAWKISHNESS ANALYSIS
-Version 1.0 (prompt score-v1, summary-v2), written 22 November 2026
+Version 1.1 (prompt score-v3 = score-v1 + conditions, summary-v2), written 22 November 2026
 
 =====================================================================
 0. WHAT THIS SKILL DOES
@@ -8,7 +8,8 @@ It turns what FOMC voters have said and how they have voted into a hawkishness s
 
   - a stance score for every voter, from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), measured against the CURRENT policy rate;
   - each voter's call for the next meeting (hike / hold / cut, with a probability);
-  - a Fed gauge from 0% to 100% (50% = comfortable holding), the next-meeting tally and the spread between members;
+  - the implied move for the next meeting (Section 14g): hike probability minus cut probability, +100% = a 25bp hike fully expected;
+  - the next-meeting tally and the spread between members;
   - the change since the previous window, a month-by-month path, and a 3-4 sentence written read.
 
 Assume the source data is already collected (Section 2 lists what is needed). The skill covers analysis only, not collection.
@@ -277,7 +278,7 @@ Check the reply in code: every member name must appear in full whenever it appea
 =====================================================================
 10. OUTPUT TO PRODUCE
 =====================================================================
-  - Headline: "Fed gauge 66% (+2 pts vs previous window, 64%) · window 28 Oct - 22 Nov 2026".
+  - Headline: "Implied move +60% (≈ +15bp) · Hike 62% · Hold 35% · Cut 3% · +15 pts vs +45% going into Oct (actual: Hold)".
   - Under it, a short "how the score is worked out" note (collapsed by default) listing the steps and the current weights.
   - Tally line: "Dec: 7 hold / 5 hike / 0 cut", followed by the spread.
   - The AI summary.
@@ -339,3 +340,44 @@ C6. Only after that, run everything, and report the documents scored, AI calls m
  6. Combine (Step 5). If as_of >= blackout_start, also save the snapshot.
  7. Write the summary (Step 6) unless the numbers are unchanged.
  8. Produce the output (Section 10), and list the documents still unscored and any failures.
+
+=====================================================================
+14. ECONOMIC DATA AND DATA-DEPENDENT STATEMENTS (added after the Sept 2026 backtest)
+=====================================================================
+Why: going into the unanimous September 2026 hike, most members had said nothing since July, and
+those who had were conditional ("if the August data show the improvement was fleeting, it may be
+appropriate to raise the policy rate in September"). The August CPI that decided it came out during the blackout.
+
+14a. Data needed (one row per series per month): actual, expected, release date.
+     Inflation (CPI, core CPI, PCE, core PCE): actual, plus expected = the Cleveland Fed inflation nowcast
+     just before release (free).
+     Jobs (payrolls change, unemployment rate, hourly earnings m/m): actual; expected = the 3-month trend
+     (unemployment: the previous month), unless you have a consensus forecast, which is better.
+14b. Capture conditions while scoring (prompt score-v3 = score-v1 plus rule 10). Each condition has:
+     quote (verbatim), indicator (core_cpi|cpi|core_pce|pce|inflation|payrolls|unemployment|wages|labor_market|other),
+     direction (hotter|cooler; hotter = more inflation or a stronger labour market), threshold (number or null),
+     data_period (YYYY-MM or null), then (hike|hold|cut), otherwise (or null), meeting (YYYY-MM-DD or null = next).
+14c. Resolve each condition with code, as of the reading date:
+     - data: the named month if data_period is given; otherwise the LATEST release of each relevant series since the statement;
+       "inflation" = core CPI, CPI and core PCE; "labor_market" = payrolls and unemployment.
+     - a release is hotter or cooler than the threshold, or else than expected; surprises within tolerance
+       (0.03pp inflation and wages, 15k payrolls, 0.05pp unemployment) count as in line.
+     - met = most relevant series moved in the stated direction (on a tie, the first series decides).
+     - met -> call = then, probability 0.85. Not met and "otherwise" given -> call = otherwise. No data yet -> pending.
+     - indicator "other": one small AI check given the condition and the data released since.
+     - only conditions for the upcoming meeting count, or open-ended ones made since the last decision.
+14d. Expected decision = the average hike/hold/cut probabilities of members with a CURRENT view
+     (a policy speech since the last decision, a resolved condition, or a rate dissent at the last meeting).
+     Members with no current view vote with that expected decision ("follows committee"). This replaces "default to hold".
+14e. Take the final reading the day before the meeting: speeches stop at the blackout, but data keeps coming.
+14f. Backtest result (Flash-Lite, Jun-Oct 2026): expected decision right at 4/4 meetings (September hike at 75%),
+     40/47 member calls right, against 30/47 before.
+14g. HEADLINE NUMBER = IMPLIED MOVE (replaces the 0-100% "Fed gauge" of Section 8, 5d). Bloomberg WIRP-style:
+     implied move = (P(hike) - P(cut)) x 100%, using the expected-decision probabilities in 14d.
+     +100% = a 25bp hike fully expected, 0 = hold, -100% = a 25bp cut. Expected size = implied/100 x 25bp.
+     Users found a 0-100 "hawkishness" gauge too easy to confuse with a probability, so show only the implied
+     move and the hike/hold/cut probabilities. Keep member stances (-5..+5) for the detail tables.
+     Path: plot the implied move going into each meeting against the actual decision (+100% hike, 0 hold, -100% cut).
+     Summary prompt summary-v3 (analysis/prompts/summary_v3.md) is built around the implied move and is given
+     explicit lists of members calling for a hike or cut (small models otherwise list hold-callers as movers).
+

@@ -8,10 +8,12 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import snapshot
 from fedwatch import db, windows
 from fedwatch.loader import Loader
 from fedwatch.net import Fetcher
@@ -94,6 +96,8 @@ def summary(window):
         "votes": votes,
         "members": members,
         "issues": q("SELECT scope, message FROM issues ORDER BY id"),
+        "macro": q("SELECT series, period, actual, expected, expected_kind, release_date FROM macro WHERE period>=? "
+                   "ORDER BY series, period", (since[:7],)),
         "no_text": q("SELECT person_id, date, title, url FROM speeches WHERE kind='no_text' AND date>=? "
                      "ORDER BY person_id, date", (since,)),
         "unverified": q("SELECT person_id, date, title, url FROM speeches WHERE speaker_verified=0 AND date>=?", (since,)),
@@ -128,6 +132,26 @@ def export_text(window):
     return "\n".join(out)
 
 
+def snapshot_html(window, model):
+    since = windows.cutoff(window).isoformat()
+    rows = q("SELECT url, person_id, date, title, kind, text FROM speeches WHERE kind!='no_text' AND date>=?", (since,))
+    return snapshot.build(window, model, summary, member, rows, analysis_api)
+
+
+def email_snapshot(window, model):
+    try:
+        return snapshot.email(snapshot_html(window, model), window)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def publish_snapshot(window, model):
+    try:
+        return snapshot.publish(snapshot_html(window, model))
+    except Exception as e:
+        return {"ok": False, "error": str(e), "file": snapshot.PUBLISH_FILE}
+
+
 def window_arg(args):
     w = args.get("window", [windows.DEFAULT])[0]
     return w if w in windows.WINDOWS else windows.DEFAULT
@@ -147,8 +171,8 @@ class Handler(BaseHTTPRequestHandler):
         args = parse_qs(u.query)
         if u.path == "/":
             return self._send((ROOT / "static" / "index.html").read_bytes(), "text/html; charset=utf-8")
-        if u.path == "/static/analysis.js":
-            return self._send((ROOT / "static" / "analysis.js").read_bytes(), "text/javascript; charset=utf-8")
+        if u.path in ("/static/analysis.js", "/static/macro.js"):
+            return self._send((ROOT / u.path.lstrip("/")).read_bytes(), "text/javascript; charset=utf-8")
         if u.path.startswith("/api/analys"):
             if not analysis_api:
                 return self._send({"error": "analysis disabled: pip install -r requirements.txt"}, status=503)
@@ -161,6 +185,15 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/speech":
             rows = q("SELECT * FROM speeches WHERE url=?", (args.get("url", [""])[0],))
             return self._send(rows[0] if rows else {}, status=200 if rows else 404)
+        if u.path == "/api/snapshot":  # download the view-only HTML without publishing it
+            html = snapshot_html(window_arg(args), args.get("model", [None])[0] or (analysis_api and analysis_api.CONFIG["model"]))
+            self.send_response(200)
+            data = html.encode()
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="FOMC-board-{datetime.now():%Y-%m-%d}.html"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return self.wfile.write(data)
         if u.path == "/api/export":
             return self._send(export_text(window_arg(args)).encode(), "text/plain; charset=utf-8")
         if u.path == "/api/load":
@@ -182,8 +215,19 @@ class Handler(BaseHTTPRequestHandler):
             if not load_state["running"]:
                 threading.Thread(target=run_load, args=(w,), daemon=True).start()
             return self._send({"started": True, "window": w})
+        if u.path == "/api/email":
+            a = parse_qs(u.query)
+            model = a.get("model", [None])[0] or (analysis_api and analysis_api.CONFIG["model"])
+            return self._send(email_snapshot(window_arg(a), model))
+        if u.path == "/api/publish":
+            a = parse_qs(u.query)
+            model = a.get("model", [None])[0] or (analysis_api and analysis_api.CONFIG["model"])
+            return self._send(publish_snapshot(window_arg(a), model))
         if u.path == "/api/analyse" and analysis_api:
-            return self._send(analysis_api.start(parse_qs(u.query).get("model", [None])[0]))
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            r = analysis_api.start(parse_qs(u.query).get("model", [None])[0], body.get("password"))
+            return self._send(r, status=200 if r["started"] else 403)
         self._send({"error": "not found"}, status=404)
 
     def log_message(self, *a):

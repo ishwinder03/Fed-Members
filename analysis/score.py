@@ -6,7 +6,7 @@ import time
 from analysis import context
 from analysis.documents import keyword_hits
 from analysis.providers.base import QuotaExhausted
-from analysis.settings import CONFIG, daily_cap, prompt, score_models
+from analysis.settings import CONFIG, PAID_UNLOCKED, daily_cap, prompt, score_models
 from analysis.store import calls_today, now, pacific_day
 from fedwatch.people import PEOPLE, display_name
 
@@ -33,6 +33,20 @@ SCHEMA = {
                                      "timestamp": {"type": ["string", "null"]}},
                       "required": ["quote", "date"]}},
         "summary": {"type": "string"},
+        "conditions": {  # score-v3: data-dependent statements, resolved later against the data
+            "type": "array",
+            "items": {"type": "object",
+                      "properties": {
+                          "quote": {"type": "string"},
+                          "indicator": {"type": "string", "enum": ["core_cpi", "cpi", "core_pce", "pce", "inflation",
+                                                                   "payrolls", "unemployment", "wages", "labor_market", "other"]},
+                          "direction": {"type": "string", "enum": ["hotter", "cooler"]},
+                          "threshold": {"type": ["number", "null"]},
+                          "data_period": {"type": ["string", "null"]},
+                          "then": {"type": "string", "enum": ["hike", "hold", "cut"]},
+                          "otherwise": {"type": ["string", "null"], "enum": ["hike", "hold", "cut", None]},
+                          "meeting": {"type": ["string", "null"]}},
+                      "required": ["quote", "indicator", "direction", "then"]}},
     },
     "required": ["stance", "next_meeting_call", "policy_relevance", "confidence", "mandate_balance",
                  "mandate_reason", "sub_views", "evidence", "summary"],
@@ -73,6 +87,13 @@ def validate(data, text):
     if len(good) < 2:
         raise Invalid(f"only {len(good)} verbatim quote(s)")
     data["evidence"] = good
+    conds = []
+    for c in data.get("conditions") or []:
+        if quote_found(c["quote"], tn):
+            conds.append(c)
+        else:
+            notes.append(f"dropped condition with non-verbatim quote: {c['quote'][:80]!r}")
+    data["conditions"] = conds
     top = max(data["next_meeting_call"], key=data["next_meeting_call"].get)
     if (data["stance"] >= 3 and top == "cut") or (data["stance"] <= -3 and top == "hike"):
         notes.append(f"stance {data['stance']} disagrees with most likely call '{top}'")
@@ -99,12 +120,12 @@ def _log_call(conn, run_id, doc, provider, status, usage=None, latency=None, err
 def _save(conn, doc, model, data, ctx, raw, notes, trial, prefiltered=0):
     call = data.get("next_meeting_call") or {}
     conn.execute(
-        "INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (doc["doc_id"], model, CONFIG["prompt_version"], trial, doc["person_id"], doc["date"], data["stance"],
          call.get("hike"), call.get("hold"), call.get("cut"), data["policy_relevance"], data["confidence"],
          data.get("mandate_balance"), data.get("mandate_reason"), json.dumps(data.get("sub_views")),
          json.dumps(data.get("evidence", [])), data.get("summary"), json.dumps(ctx), raw,
-         "; ".join(notes) or None, prefiltered, now()))
+         "; ".join(notes) or None, prefiltered, now(), json.dumps(data.get("conditions") or [])))
     conn.commit()
 
 
@@ -136,8 +157,11 @@ def score(conn, fed, provider, doc, run_id=None, trial=0, log=print):
     for attempt in (1, 2):  # one retry on an invalid reply
         cap = daily_cap(provider.model)
         if calls_today(conn, provider.model) >= cap:
-            raise QuotaExhausted(f"{provider.model}: daily cap of {cap} calls reached"
-                                 + (" (resets midnight Pacific)" if cap else " (paid credits not approved)"))
+            paid = provider.model in PAID_UNLOCKED
+            raise QuotaExhausted(f"{provider.model}: " + (
+                f"paid ceiling of {cap} calls reached today" if paid else
+                f"free limit of {cap} calls reached today; enter the paid password to continue" if cap else
+                "paid-only model; enter the paid password to use it"))
         t0 = time.time()
         try:
             data, usage = provider.generate_json(system, user, SCHEMA, temperature)

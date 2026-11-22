@@ -5,22 +5,26 @@ provider = "gemini"                      # "gemini" now; "claude" once providers
 model = "gemini-3.5-flash-lite"          # default for the Analysis tab (500 calls/day)
 fallback_model = ""                      # model that scores what the default can't once its cap is reached ("" = none)
 models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-neon"]   # model picker
-prompt_version = "score-v1"              # v2 (call rule for "more hikes, timing unstated") over-corrected to all-hold
-                                         # in the Oct 2026 backtest, so v1 is used
-summary_prompt_version = "summary-v2"    # v2: shorter, three biggest movers only
+prompt_version = "score-v3"              # v3 = v1 plus data-dependent "conditions" (v2 was rejected: all-hold)
+summary_prompt_version = "summary-v3"    # v3: built around the implied move (Bloomberg-style)
 temperature = 0
 
 [limits]                                 # limits are per project and per model
-requests_per_minute = 5
-requests_per_day = 20                    # default cap per model per day (free tier)
+requests_per_minute = 10                 # 429s are retried with backoff
+requests_per_day = 20                    # free limit for a model not listed under [limits.free_daily]
 max_retries = 5                          # on 429 / 5xx: honour retryDelay if given, else 15s, 30s, 60s ...
 
-[limits.daily_cap]                       # per-model caps; 0 = don't call (paid credits not approved)
+[limits.free_daily]                      # free-tier calls per model per day; beyond this needs the paid password
 "gemini-3.5-flash-lite" = 500
-"gemini-3.8-flash" = 20
 "gemini-3.5-flash" = 20
-"gemini-4-hydrogen" = 0                  # paid credits: only when approved
-"gemini-4-neon" = 0
+"gemini-3.8-flash" = 20
+"gemini-4-hydrogen" = 0                  # paid only
+"gemini-4-neon" = 0                      # paid only
+
+[paid]                                   # spending past the free limits (or on paid-only models) needs this password
+password_sha256 = "77ac319bfe1979e2d799d9e6987e65feb54f61511c03552ebae990826c208590"
+hint = "bps made on my second trade"
+daily_cap = 150                          # hard ceiling per model per day even when unlocked
 
 [source_weights]
 vote = 1.0                               # a dissent
@@ -42,6 +46,11 @@ dissent_looser_wording = -3
 min_hits = 3                             # fewer keyword hits than this -> relevance 0, no AI call
 keywords = ["inflation", "monetary policy", "policy rate", "federal funds", "labor market",
             "unemployment", "rate cut", "rate increase", "price stability", "maximum employment", "FOMC"]
+
+[conditions]                             # data-dependent statements, resolved against released data
+met_probability = 0.85                   # probability given to the stated action once its condition is met
+tolerance = { cpi = 0.03, core_cpi = 0.03, pce = 0.03, core_pce = 0.03, wages = 0.03, payrolls = 15, unemployment = 0.05 }
+                                         # surprises smaller than this vs expected count as "in line"
 
 [combine]
 window_decay = [1.0, 0.5, 0.25]          # weight of documents from the current window, the one before, and the one before that

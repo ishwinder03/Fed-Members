@@ -3,6 +3,7 @@
 
     python3 refresh.py [--window 6m] [--model M] [--email]
 
+Always loads at least 1y (the analysis needs the history); --window sets what the snapshot shows.
 Writes view_for_work.html at the repo root (the workflow commits and pushes it). --email also sends it
 to work; on GitHub that needs the SMTP_PASSWORD secret (a Gmail app password), otherwise it is skipped.
 """
@@ -22,8 +23,11 @@ def main(argv):
         sys.exit("Analysis unavailable (pip install -r requirements.txt)")
     model = opt("--model") or server.analysis_api.CONFIG["model"]
 
-    print(f"== Load ({window})", flush=True)
-    server.run_load(window)
+    # the analysis looks back about a year (the meeting path plus its lookback windows), so always
+    # collect 1y (or YTD if that's longer); `window` only sets what the snapshot shows
+    load = "ytd" if window == "ytd" and windows.cutoff("ytd") < windows.cutoff("1y") else "1y"
+    print(f"== Load ({load})", flush=True)
+    server.run_load(load)
     if not server.load_state["ok"]:
         print("Load finished with errors; carrying on with what was collected", flush=True)
 

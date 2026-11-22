@@ -307,5 +307,7 @@ def path_docs(fed, as_of):
     spans = []
     for _, _, snap in path_meetings(fed, as_of):
         dates = decision_dates(fed, snap)
+        if not dates:  # nothing collected before this meeting (the load didn't reach back that far)
+            continue
         spans.append((documents.voters(fed, snap), dates[max(0, len(dates) - back)], snap))
     return spans

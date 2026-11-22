@@ -55,6 +55,8 @@ def overview(model):
     return {
         "models": CONFIG["models"], "default_model": CONFIG["model"], "model": model,
         "prompt_version": CONFIG["prompt_version"], "provider": CONFIG["provider"],
+        "method": {"source_weights": CONFIG["source_weights"], "window_decay": CONFIG["combine"]["window_decay"],
+                   "vote_scores": CONFIG["vote_scores"]},
         "reading": live, "snapshot": snap,
         "last_run": dict(last) if last else None,
         "calls_today": calls_today(conn, model), "daily_limit": daily_cap(model),

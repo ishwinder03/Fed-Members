@@ -8,7 +8,7 @@ It turns what FOMC voters have said and how they have voted into a hawkishness s
 
   - a stance score for every voter, from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), measured against the CURRENT policy rate;
   - each voter's call for the next meeting (hike / hold / cut, with a probability);
-  - a Fed gauge from 0 to 10, the next-meeting tally and the spread between members;
+  - a Fed gauge from 0% to 100% (50% = comfortable holding), the next-meeting tally and the spread between members;
   - the change since the previous window, a month-by-month path, and a 3-4 sentence written read.
 
 Assume the source data is already collected (Section 2 lists what is needed). The skill covers analysis only, not collection.
@@ -233,8 +233,10 @@ Definitions:
     4. Otherwise take the outcome with the highest probability. If two are tied, choose in the order hold, hike, cut, so ties go to hold.
     Report the probability only when the call is current.
 
-5d. Fed gauge     = (mean of the 12 current voters' stances) + 5, on a scale of 0-10. Every voter counts equally.
-    Gauge change  = gauge - the gauge as of the day before the last decision (worked out the same way, with its own lookback).
+5d. Fed gauge     = ((mean of the 12 current voters' stances) + 5) x 10, shown as a percentage from 0% to 100%.
+                    50% = comfortable holding; above 50% leans to hikes, below 50% to cuts. Every voter counts equally.
+    Gauge change  = gauge - the gauge as of the day before the last decision (worked out the same way, with its own lookback),
+                    in percentage points.
     Tally         = the number of hike / hold / cut calls across the 12.
     Spread        = the population standard deviation of the 12 stances.
 
@@ -242,19 +244,19 @@ Definitions:
     "going into the <date> meeting". Members can't speak publicly during the blackout, so this reading won't change before the meeting.
 
 5f. Path: for each of the last 6 calendar months, take each member's weighted-average stance from ALL of that month's documents and votes,
-    then the Fed average (the mean of members with data that month, and the gauge = that average + 5). Leave a month blank where a member has no data.
+    then the Fed average (the mean of members with data that month, and the gauge = (that average + 5) x 10 %). Leave a month blank where a member has no data.
 
 =====================================================================
 9. STEP 6: WRITTEN SUMMARY (AI, one call per reading)
 =====================================================================
 Send the final numbers as JSON: the context, the window, the gauge, the previous gauge, the change, the spread and the tally. For each member include
 the stance, the previous stance, the change, the carried-over flag, the call, the probability, the call note, and their latest quote with its date.
-All numbers are rounded to 1 decimal place. Use the prompt below and store the reply. Reuse it whenever the numbers haven't changed (key it on a hash of the JSON).
+Give the gauge as a percentage and its change in points; round the other numbers to 1 decimal place. Use the prompt below and store the reply. Reuse it whenever the numbers haven't changed (key it on a hash of the JSON).
 
 ----- SYSTEM PROMPT (summary-v2) -----
 You write a short read of the Federal Reserve's policy stance for an analyst, based ONLY on the numbers and quotes provided.
 
-The gauge runs from 0 (most dovish) to 10 (most hawkish); 5 means the committee on average is comfortable holding the current rate. Member stances run from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), relative to the current rate. The dual mandate is maximum employment and 2 percent PCE inflation: inflation worries are hawkish, labour-market worries are dovish.
+The gauge is a percentage from 0% (most dovish) to 100% (most hawkish); 50% means the committee on average is comfortable holding the current rate. Write it as a percentage (e.g. "66%"), and its change in percentage points. Member stances run from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), relative to the current rate. The dual mandate is maximum employment and 2 percent PCE inflation: inflation worries are hawkish, labour-market worries are dovish.
 
 Write at most 4 short sentences, in plain prose for a reader who will see the numbers next to it:
 1. The gauge level and what is driving it (the main theme in members' views).
@@ -275,7 +277,8 @@ Check the reply in code: every member name must appear in full whenever it appea
 =====================================================================
 10. OUTPUT TO PRODUCE
 =====================================================================
-  - Headline: "Fed gauge 6.4/10 (+0.3 vs previous window) · window 28 Oct - 21 Nov 2026".
+  - Headline: "Fed gauge 66% (+2 pts vs previous window, 64%) · window 28 Oct - 22 Nov 2026".
+  - Under it, a short "how the score is worked out" note (collapsed by default) listing the steps and the current weights.
   - Tally line: "Dec: 7 hold / 5 hike / 0 cut", followed by the spread.
   - The AI summary.
   - Member table: name, stance, change, call with probability or "no call" / "out of date" / "from dissent", documents in the window
@@ -311,7 +314,7 @@ C6. Only after that, run everything, and report the documents scored, AI calls m
   - Prompt v2 told the model that "more hikes, timing unstated" means hold. It got 10/12, but only by calling everyone hold,
     so it missed both dissenters. It was rejected. Don't tune the prompt against one meeting.
   - The model matters most for the next-meeting CALL, less for the stance. Gemini 3.5 Flash-Lite was perfectly consistent
-    (repeat stances identical) and gave similar stances (gauge 6.6 against 6.8 for Hydrogen), but its calls scored 6/12: it gave
+    (repeat stances identical) and gave similar stances (gauge 66% against 68% for Hydrogen), but its calls scored 6/12: it gave
     both dissenters a 5% hike probability and called hikes for four members who held. Use a stronger model for calls,
     or treat a small model's calls as weak.
   - Current-window-only stances relied on too little evidence: just after a decision, most members had one document or none,

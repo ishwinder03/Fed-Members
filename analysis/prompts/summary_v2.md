@@ -1,6 +1,6 @@
 You write a short read of the Federal Reserve's policy stance for an analyst, based ONLY on the numbers and quotes provided.
 
-The gauge runs from 0 (most dovish) to 10 (most hawkish); 5 means the committee on average is comfortable holding the current rate. Member stances run from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), relative to the current rate. The dual mandate is maximum employment and 2 percent PCE inflation: inflation worries are hawkish, labour-market worries are dovish.
+The gauge is a percentage from 0% (most dovish) to 100% (most hawkish); 50% means the committee on average is comfortable holding the current rate. Write it as a percentage (e.g. "66%"), and its change in percentage points. Member stances run from -5 (wants big or fast cuts) to +5 (wants big or fast hikes), relative to the current rate. The dual mandate is maximum employment and 2 percent PCE inflation: inflation worries are hawkish, labour-market worries are dovish.
 
 Write at most 4 short sentences, in plain prose for a reader who will see the numbers next to it:
 1. The gauge level and what is driving it (the main theme in members' views).

@@ -3,6 +3,7 @@
 window.Analysis = (() => {
   let A = null, model = store.get("model"), open = null, tick = null, started = false;
   const f1 = x => x == null ? "—" : (x > 0 ? "+" : "") + x.toFixed(1);
+  const pct = g => g == null ? "—" : Math.round(g * 10) + "%";   // gauge is stored 0-10, shown 0-100%
   const CALL = {hike: "Hike", hold: "Hold", cut: "Cut"};
   const monthName = m => new Date(m + "-15T12:00:00").toLocaleDateString("en-US", {month: "short"});
 
@@ -33,7 +34,7 @@ window.Analysis = (() => {
   function gaugeBar(g) {
     const pct = Math.max(0, Math.min(100, g * 10));
     return `<div class="gbar"><div class="gtrack"></div><div class="gmid"></div><div class="gpin" style="left:${pct}%"></div></div>
-      <div class="gends muted"><span>0 dovish</span><span>5 hold</span><span>10 hawkish</span></div>`;
+      <div class="gends muted"><span>0% dovish</span><span>50% hold</span><span>100% hawkish</span></div>`;
   }
 
   function render() {
@@ -47,13 +48,13 @@ window.Analysis = (() => {
     const t = R.tally;
     const chg = R.gauge_change;
     const pending = R.pending_docs ? `<div class="banner">${R.pending_docs} document${R.pending_docs === 1 ? "" : "s"} in this window ${R.pending_docs === 1 ? "is" : "are"} not scored yet${A.calls_today >= A.daily_limit ? " (today's call limit is used up; run again after midnight Pacific)" : ""}. Members without a scored document use their earlier scores until then.</div>` : "";
-    const snap = A.snapshot ? `<div class="snap muted">Going into the ${fmtDate(A.snapshot.context.next_meeting)} meeting (blackout from ${fmtDate(A.snapshot.as_of)}): <b>${A.snapshot.gauge?.toFixed(1) ?? "—"}/10</b>, ${A.snapshot.tally.hold} hold / ${A.snapshot.tally.hike} hike / ${A.snapshot.tally.cut} cut</div>` : "";
+    const snap = A.snapshot ? `<div class="snap muted">Going into the ${fmtDate(A.snapshot.context.next_meeting)} meeting (blackout from ${fmtDate(A.snapshot.as_of)}): <b>${pct(A.snapshot.gauge)}</b>, ${A.snapshot.tally.hold} hold / ${A.snapshot.tally.hike} hike / ${A.snapshot.tally.cut} cut</div>` : "";
     $("#ana").innerHTML = `${pending}
       <div class="atop">
         <div class="panel gauge">
           <div class="label muted">Fed gauge · ${fmtDate(R.window_start)} – ${fmtDate(R.window_end)}</div>
-          <div class="big">${R.gauge == null ? "—" : R.gauge.toFixed(1)}<span>/10</span></div>
-          <div class="muted">${chg == null ? "no previous window" : `${f1(chg)} vs previous window (${R.gauge_prev.toFixed(1)})`}</div>
+          <div class="big">${pct(R.gauge)}</div>
+          <div class="muted">${chg == null ? "no previous window" : `${chg >= 0 ? "+" : "−"}${Math.abs(Math.round(chg * 10))} pts vs previous window (${pct(R.gauge_prev)})`}</div>
           ${R.gauge == null ? "" : gaugeBar(R.gauge)}
         </div>
         <div class="panel tally">
@@ -64,6 +65,7 @@ window.Analysis = (() => {
           <div class="muted">Rate ${esc(ctx.target_range)} · last decision ${esc(ctx.last_decision)} ${fmtDate(ctx.last_decision_date)}</div>
         </div>
       </div>
+      ${method()}
       ${snap}
       <div class="panel summary">${R.summary_text ? esc(R.summary_text) : `<span class="muted">No summary yet${A.calls_today >= A.daily_limit ? " (daily call limit reached)" : ""}.</span>`}</div>
       <h2>Members <span class="sub muted">stance −5 (wants big cuts) … +5 (wants big hikes), relative to the current rate</span></h2>
@@ -136,21 +138,37 @@ window.Analysis = (() => {
   }
   const pc = x => x == null ? "—" : Math.round(x * 100) + "%";
 
-  // single-series line: Fed gauge (0-10) by month, with crosshair tooltip
+  // the methodology behind the headline numbers, collapsed by default; values come from config
+  function method() {
+    const M = A.method, sw = M.source_weights, d = M.window_decay.map(x => Math.round(x * 100) + "%");
+    return `<details class="panel method"><summary>How the score is worked out</summary><ul>
+      <li>The AI (${esc(model)}, prompt ${esc(A.prompt_version)}) reads every speech, essay and dissent statement from the 12 voters and scores it from −5 (wants big cuts) to +5 (wants big hikes), relative to the current rate. Worry about inflation counts as hawkish, worry about jobs as dovish (the dual mandate). Speeches with no monetary-policy content are skipped.</li>
+      <li>Votes are scored by rule: voting with the majority 0, a dissent on the rate ±${M.vote_scores.dissent_tighter_rate}, a dissent on the statement's wording only ±${M.vote_scores.dissent_tighter_wording}.</li>
+      <li>Each document's weight = source × how much it is about policy × how clear the stance is × how recent it is. Sources: dissent statement and essay ${sw.statement}, speech ${sw.speech}, Q&amp;A ${sw.qa}, panel ${sw.panel}, dissent vote ${sw.vote}, agreeing vote ${sw.vote_agree}.</li>
+      <li>Recency: since the last decision ${d[0]}, the window before ${d[1]}, the one before that ${d[2]}.</li>
+      <li>Member stance = the weighted average of their documents. A member with nothing in those windows keeps their older score ("carried over").</li>
+      <li><b>Fed gauge</b> = the average of the 12 voters' stances, rescaled from −5…+5 to 0–100%. 50% means the committee is comfortable holding; above 50% leans to hikes, below to cuts. Each voter counts equally.</li>
+      <li><b>Calls</b> come from each member's latest policy speech. No call, a call from before the last decision, or a tie counts as hold; a rate dissent at the last meeting counts in its direction until they speak again.</li>
+      <li><b>Spread</b> = how far apart the 12 stances are (standard deviation, in stance points).</li>
+      <li>The written summary only explains these numbers; it cannot change them.</li>
+    </ul></details>`;
+  }
+
+  // single-series line: Fed gauge (0-100%) by month, with crosshair tooltip
   function pathChart(P) {
     const W = 720, H = 200, L = 34, Rr = 12, T = 12, B = 26;
     const xs = i => L + (W - L - Rr) * (P.length === 1 ? 0.5 : i / (P.length - 1));
     const ys = v => T + (H - T - B) * (1 - v / 10);
     const pts = P.map((p, i) => p.gauge == null ? null : [xs(i), ys(p.gauge), p]).filter(Boolean);
-    const grid = [0, 5, 10].map(v => `<line x1="${L}" x2="${W - Rr}" y1="${ys(v)}" y2="${ys(v)}" class="${v === 5 ? "gmidline" : "gline"}"/><text x="${L - 6}" y="${ys(v) + 4}" text-anchor="end">${v}</text>`).join("");
+    const grid = [0, 5, 10].map(v => `<line x1="${L}" x2="${W - Rr}" y1="${ys(v)}" y2="${ys(v)}" class="${v === 5 ? "gmidline" : "gline"}"/><text x="${L - 6}" y="${ys(v) + 4}" text-anchor="end">${v * 10}%</text>`).join("");
     const xl = P.map((p, i) => `<text x="${xs(i)}" y="${H - 6}" text-anchor="middle">${monthName(p.month)}</text>`).join("");
     const line = pts.length > 1 ? `<path d="M${pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join("L")}" class="pline"/>` : "";
-    const dots = pts.map(([x, y, p]) => `<circle cx="${x}" cy="${y}" r="4" class="pdot"/><circle cx="${x}" cy="${y}" r="16" class="hit" data-tip="${esc(monthName(p.month))}: gauge ${p.gauge.toFixed(1)} (${p.n_members} members with documents)"/>`).join("");
+    const dots = pts.map(([x, y, p]) => `<circle cx="${x}" cy="${y}" r="4" class="pdot"/><circle cx="${x}" cy="${y}" r="16" class="hit" data-tip="${esc(monthName(p.month))}: gauge ${pct(p.gauge)} (${p.n_members} members with documents)"/>`).join("");
     setTimeout(() => document.querySelectorAll(".pathsvg .hit").forEach(c => {
       c.onmouseenter = e => { const t = $("#ptip"); t.textContent = c.dataset.tip; t.hidden = false; };
       c.onmouseleave = () => $("#ptip").hidden = true;
     }));
-    return `<div class="panel"><div class="label muted">Fed gauge by month (0 dovish – 10 hawkish)</div>
+    return `<div class="panel"><div class="label muted">Fed gauge by month (0% dovish – 100% hawkish)</div>
       <svg class="pathsvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Fed gauge by month">${grid}${xl}${line}${dots}</svg>
       <div id="ptip" class="muted small" hidden></div></div>`;
   }
@@ -201,6 +219,10 @@ window.Analysis = (() => {
     .gmid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
     .gpin { position: absolute; top: -2px; width: 4px; height: 18px; margin-left: -2px; border-radius: 2px; background: var(--ink); box-shadow: 0 0 0 2px var(--panel); }
     .gends { display: flex; justify-content: space-between; font-size: 11.5px; margin-top: 2px; }
+    .method { margin-top: 10px; padding: 10px 18px; }
+    .method summary { color: var(--muted); font-size: 13px; }
+    .method ul { margin: 8px 0 2px; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+    .method li { margin: 3px 0; }
     .summary { margin-top: 10px; font-size: 14.5px; line-height: 1.55; }
     .snap { margin-top: 8px; font-size: 13px; }
     .mtable tbody tr { cursor: pointer; }

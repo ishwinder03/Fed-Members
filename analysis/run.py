@@ -131,7 +131,7 @@ def run(model=None, as_of=None, label=None, limit=None, want_summary=True, log=p
             build_reading(conn, fed, model, provider, run_id, ctx["blackout_start"], "going into the meeting", False, log)
             log(f"Snapshot saved: going into the {ctx['next_meeting']} meeting")
     g = r["gauge"]
-    log(f"Gauge {g:.1f}/10" if g is not None else "Gauge: not enough scored documents yet")
+    log(f"Gauge {g * 10:.0f}%" if g is not None else "Gauge: not enough scored documents yet")
     calls = conn.execute("SELECT COUNT(*) FROM ai_calls WHERE run_id=?", (run_id,)).fetchone()[0]
     dur = time.time() - t0
     log(f"Done in {dur:.0f}s: {scored} scored, {skipped} skipped by prefilter, {failures} failed, "

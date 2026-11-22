@@ -57,7 +57,8 @@ Speech URLs already stored are skipped, so later Loads only fetch new items.
 
 ## Analysis tab
 
-Press **Run analysis** after a Load. The tab is separate from Load. It only *reads* `data/fed.db`
+Press **Run analysis** after a Load. Under the gauge, a collapsed **How the score is worked out**
+box explains the method in brief, with the current weights from the config. The tab is separate from Load. It only *reads* `data/fed.db`
 and keeps its own results in `data/analysis.db`.
 
 ### Set-up
@@ -104,8 +105,8 @@ and keeps its own results in `data/analysis.db`.
      the two windows before it, at recency weights 1.0 / 0.5 / 0.25. A document's weight is
      source × relevance × confidence × recency. Agreeing votes count at 0.3.
    - **Carry-over**: a member silent through all three windows has their older score carried over.
-   - **Fed gauge** = average stance of the 12 voters + 5 (0–10). The reading also gives the change
-     vs the previous window, the hike/hold/cut **tally**, the **spread** (std dev of stances) and a
+   - **Fed gauge** = average stance of the 12 voters, rescaled from −5…+5 to 0–100% (50% =
+     comfortable holding). The reading also gives the change in points vs the previous window, the hike/hold/cut **tally**, the **spread** (std dev of stances) and a
      **6-month path**.
 6. **Summary (AI).** A 4-sentence read of the final numbers (`prompts/summary_v2.md`). It explains
    the numbers and never changes them.

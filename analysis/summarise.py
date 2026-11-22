@@ -13,11 +13,13 @@ SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}}, "requ
 def facts(r, ctx):
     """The numbers and top quotes sent to the model, rounded the way the page shows them."""
     f = lambda x: None if x is None else round(x, 1)
+    pc = lambda g: None if g is None else f"{round(g * 10)}%"   # gauge 0-10 shown as 0-100%
     return {
         "policy_context": ctx["text"],
         "window": f"{r['window_start']} to {r['window_end']}",
-        "gauge_out_of_10": f(r["gauge"]), "gauge_previous_window": f(r["gauge_prev"]),
-        "gauge_change": f(r["gauge_change"]), "spread_std_dev": f(r["spread"]),
+        "gauge_percent": pc(r["gauge"]), "gauge_previous_window_percent": pc(r["gauge_prev"]),
+        "gauge_change_points": None if r["gauge_change"] is None else round(r["gauge_change"] * 10),
+        "spread_std_dev": f(r["spread"]),
         "next_meeting_tally": {k: v for k, v in r["tally"].items() if v},
         "members": [{
             "name": m["name"], "stance": f(m["stance"]), "previous_window_stance": f(m["prev_stance"]),
